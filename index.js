@@ -411,6 +411,10 @@ const SYSTEM_INSTRUCTION = `あなたは不動産会社の顧客対応チャッ�
 表に該当する項目が無い、もしくは自信が持てない場合は matched=false としてください（answerやrowNumberは省略してよい）。
 confidenceは0〜1で、0.75未満の場合は原則matched=falseとしてください。`;
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function matchQuestion(question, faqRows) {
   const model = getGeminiClient().getGenerativeModel({
     model: config.geminiModel,
@@ -428,18 +432,33 @@ async function matchQuestion(question, faqRows) {
 
   const prompt = `# Q&A表\n${table || '(表は現在空です)'}\n\n# お客様からの質問\n${question}\n\n上記のQ&A表だけを根拠にJSON形式で回答してください。`;
 
-  const result = await model.generateContent(prompt);
-  const text = result.response.text();
-  let parsed;
-  try {
-    parsed = JSON.parse(text);
-  } catch (e) {
-    throw new Error(`Geminiの応答をJSONとして解釈できませんでした: ${text}`);
+  // Geminiが一時的な混雑(503など)で失敗することがあるため、
+  // 短い間隔を空けて最大3回まで試行する。
+  const maxAttempts = 3;
+  let lastError;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const result = await model.generateContent(prompt);
+      const text = result.response.text();
+      let parsed;
+      try {
+        parsed = JSON.parse(text);
+      } catch (e) {
+        throw new Error(`Geminiの応答をJSONとして解釈できませんでした: ${text}`);
+      }
+      if (parsed.confidence !== undefined && parsed.confidence < 0.75) {
+        parsed.matched = false;
+      }
+      return parsed;
+    } catch (e) {
+      lastError = e;
+      if (attempt < maxAttempts) {
+        console.error(`Gemini呼び出しに失敗しました(${attempt}回目)。再試行します:`, e.message || e);
+        await sleep(1500 * attempt);
+      }
+    }
   }
-  if (parsed.confidence !== undefined && parsed.confidence < 0.75) {
-    parsed.matched = false;
-  }
-  return parsed;
+  throw lastError;
 }
 
 // Geminiが一時的に使えない時の保険用の、単純な文字列一致による簡易マッチング。
