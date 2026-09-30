@@ -170,7 +170,19 @@ async function getSheets() {
 }
 
 let cachedFaqTitle = null;
-async function resolveFaqSheetTitle() {
+// overrideGid / overrideName を渡すと、環境変数の設定に関係なく一時的に別タブを指定できる
+// （/debug-sheet?gid=... や ?name=... でRenderを再デプロイせずに他タブを確認するために使用）。
+async function resolveFaqSheetTitle(overrideGid, overrideName) {
+  if (overrideName) return overrideName;
+  if (overrideGid) {
+    const sheets = await getSheets();
+    const meta = await sheets.spreadsheets.get({ spreadsheetId: config.sheetId });
+    const target = meta.data.sheets.find((s) => String(s.properties.sheetId) === String(overrideGid));
+    if (!target) {
+      throw new Error(`gid=${overrideGid} に一致するシートタブが見つかりません。`);
+    }
+    return target.properties.title;
+  }
   if (config.faqSheetName) return config.faqSheetName;
   if (cachedFaqTitle) return cachedFaqTitle;
   const sheets = await getSheets();
@@ -185,6 +197,17 @@ async function resolveFaqSheetTitle() {
   }
   cachedFaqTitle = target.properties.title;
   return cachedFaqTitle;
+}
+
+async function listAllSheetTabs() {
+  const sheets = await getSheets();
+  const meta = await sheets.spreadsheets.get({ spreadsheetId: config.sheetId });
+  return meta.data.sheets.map((s) => ({
+    title: s.properties.title,
+    gid: String(s.properties.sheetId),
+    rowCount: s.properties.gridProperties?.rowCount,
+    columnCount: s.properties.gridProperties?.columnCount,
+  }));
 }
 
 async function sheetTabExists(title) {
@@ -249,8 +272,8 @@ const FAQ_QUESTION_KEYWORDS = ['質問', 'Q&A', 'Question', '設問'];
 // 見出しが使われているケースがあるため）。
 const FAQ_ANSWER_KEYWORDS = ['回答', '対応', 'A ', 'Answer', '返信'];
 
-async function readFaqTable() {
-  const title = await resolveFaqSheetTitle();
+async function readFaqTable(overrideGid, overrideName) {
+  const title = await resolveFaqSheetTitle(overrideGid, overrideName);
   const sheets = await getSheets();
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: config.sheetId,
@@ -273,12 +296,12 @@ async function readFaqTable() {
   if (config.faqQuestionCol) qIdx = colLetterToIndex(config.faqQuestionCol);
   if (config.faqAnswerCol) aIdxList = [colLetterToIndex(config.faqAnswerCol)];
 
-  // 実際の列見出し行を探す。シートの1行目が表タイトルだけの行（例:「質問」の1セルのみ）で、
-  // 本当の列見出し（質問・対応など）が2行目以降にあるケースに対応するため、
+  // 実際の列見出し行を探す。シートの1〜2行目が表タイトルだけの行で、
+  // 本当の列見出し（質問・対応など）がそれより下の行にあるケースに対応するため、
   // 先頭の数行を見て「質問キーワードと回答/対応キーワードの両方が見つかる行」を見出し行とみなす。
   let headerRowIndex = 0;
   if (qIdx === undefined || aIdxList === undefined) {
-    const searchLimit = Math.min(values.length, 5);
+    const searchLimit = Math.min(values.length, 10);
     let found = false;
     for (let r = 0; r < searchLimit; r++) {
       const row = values[r];
@@ -846,11 +869,14 @@ app.get('/debug', async (req, res) => {
 });
 
 // 一時的な調査用エンドポイント。Q&A表の中身をそのまま確認するため。原因が分かったら削除してOK。
+// ?gid=... または ?name=... を付けると、環境変数を変えずに一時的に別タブを確認できる。
 app.get('/debug-sheet', async (req, res) => {
   if (!checkSecret(req, res)) return;
   try {
+    const overrideGid = req.query.gid;
+    const overrideName = req.query.name;
     const { title, headerRowIndex, headerRow, questionColIndex, answerColIndex, answerColIndexes, rows } =
-      await readFaqTable();
+      await readFaqTable(overrideGid, overrideName);
     res.json({
       sheetTitle: title,
       headerRowNumber: headerRowIndex + 1,
@@ -866,6 +892,19 @@ app.get('/debug-sheet', async (req, res) => {
         answerPreview: (r.answer || '').slice(0, 60),
       })),
     });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok: false, error: String(e.message || e) });
+  }
+});
+
+// 一時的な調査用エンドポイント。スプレッドシート内の全タブ（名前とgid）を一覧表示する。
+// 正しいQ&AタブのgidをFAQ_SHEET_GIDに設定するために使用。原因が分かったら削除してOK。
+app.get('/debug-sheets', async (req, res) => {
+  if (!checkSecret(req, res)) return;
+  try {
+    const tabs = await listAllSheetTabs();
+    res.json({ spreadsheetId: config.sheetId, tabs });
   } catch (e) {
     console.error(e);
     res.status(500).json({ ok: false, error: String(e.message || e) });
