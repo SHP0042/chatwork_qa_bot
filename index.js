@@ -36,7 +36,7 @@ const config = {
 
   // LLM
   geminiApiKey: required('GEMINI_API_KEY'),
- geminiModel: process.env.GEMINI_MODEL || 'gemini-3.8-flash',
+  geminiModel: process.env.GEMINI_MODEL || 'gemini-3.8-flash',
 
   // Scheduling / auth
   cronSecret: required('CRON_SECRET', 'change-me'),
@@ -442,6 +442,30 @@ async function matchQuestion(question, faqRows) {
   return parsed;
 }
 
+// Geminiが一時的に使えない時の保険用の、単純な文字列一致による簡易マッチング。
+// AIによる柔軟な判定はできないが、表の質問文とほぼ同じ聞き方をされた場合は
+// 自動回答できるようにする（誤答を避けるため、判定は厳しめ＝一致 or 包含関係のみ）。
+function normalizeForMatch(text) {
+  return (text || '')
+    .replace(/[\s　]+/g, '')
+    .replace(/[！-～]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0))
+    .replace(/[？?！!。、,.]/g, '')
+    .toLowerCase();
+}
+
+function fallbackMatchQuestion(question, faqRows) {
+  const normQuestion = normalizeForMatch(question);
+  if (!normQuestion) return { matched: false };
+  for (const row of faqRows) {
+    const normRowQ = normalizeForMatch(row.question);
+    if (!normRowQ) continue;
+    if (normQuestion === normRowQ || normQuestion.includes(normRowQ) || normRowQ.includes(normQuestion)) {
+      return { matched: true, rowNumber: row.rowNumber, answer: row.answer, confidence: 1, fallback: true };
+    }
+  }
+  return { matched: false };
+}
+
 // ============================================================
 // businessDays
 // ============================================================
@@ -493,39 +517,58 @@ async function processIncomingMessages(messages, { log = console.log } = {}) {
     const senderId = String(msg.account.account_id);
     const messageId = msg.message_id;
 
-    if (senderId === myAccountId) continue;
+    try {
+      if (senderId === myAccountId) continue;
 
-    const replyTarget = parseReplyTarget(body);
-    if (replyTarget && config.holderAccountIds.includes(senderId)) {
-      const handled = await handleHolderReply({ replyTarget, body, senderId, roomId, log });
-      if (handled) {
-        processed++;
-        continue;
+      const replyTarget = parseReplyTarget(body);
+      if (replyTarget && config.holderAccountIds.includes(senderId)) {
+        const handled = await handleHolderReply({ replyTarget, body, senderId, roomId, log });
+        if (handled) {
+          processed++;
+          continue;
+        }
+      }
+
+      if (!isMentionToMe(body, myAccountId)) continue;
+
+      const cleanBody = stripChatworkTags(body);
+
+      if (cleanBody.includes(config.teachTriggerWord)) {
+        const m = cleanBody.match(TEACH_PATTERN);
+        if (m) {
+          const [, q, a] = m;
+          await appendFaqRow(q.trim(), a.trim());
+          await replyToMessage({
+            roomId,
+            toAccountId: senderId,
+            toMessageId: messageId,
+            body: `Q&A表に登録しました。\nQ: ${q.trim()}\nA: ${a.trim()}\n次回から同じ質問には自動で回答します。`,
+          });
+          processed++;
+          continue;
+        }
+      }
+
+      await handleQuestion({ question: cleanBody, senderId, messageId, roomId, log });
+      processed++;
+    } catch (e) {
+      // 1件のメッセージ処理で失敗しても、他のメッセージの処理は続行する。
+      // このメッセージは既読になってしまっているため、可能な範囲でお客様に
+      // 「担当者確認中」の返信だけでも送っておく（失敗しても致命的にはしない）。
+      console.error(`メッセージ処理でエラーが発生しました(message_id=${messageId}):`, e);
+      try {
+        if (isMentionToMe(body, myAccountId)) {
+          await replyToMessage({
+            roomId,
+            toAccountId: senderId,
+            toMessageId: messageId,
+            body: `ただいま担当者に確認しております。少々お待ちください。`,
+          });
+        }
+      } catch (e2) {
+        console.error('エラー時のフォールバック返信にも失敗しました:', e2);
       }
     }
-
-    if (!isMentionToMe(body, myAccountId)) continue;
-
-    const cleanBody = stripChatworkTags(body);
-
-    if (cleanBody.includes(config.teachTriggerWord)) {
-      const m = cleanBody.match(TEACH_PATTERN);
-      if (m) {
-        const [, q, a] = m;
-        await appendFaqRow(q.trim(), a.trim());
-        await replyToMessage({
-          roomId,
-          toAccountId: senderId,
-          toMessageId: messageId,
-          body: `Q&A表に登録しました。\nQ: ${q.trim()}\nA: ${a.trim()}\n次回から同じ質問には自動で回答します。`,
-        });
-        processed++;
-        continue;
-      }
-    }
-
-    await handleQuestion({ question: cleanBody, senderId, messageId, roomId, log });
-    processed++;
   }
 
   return { processed };
@@ -534,14 +577,23 @@ async function processIncomingMessages(messages, { log = console.log } = {}) {
 async function handleQuestion({ question, senderId, messageId, roomId, log }) {
   if (!question) return;
   const { rows } = await readFaqTable();
-  const result = await matchQuestion(question, rows);
+  let result;
+  try {
+    result = await matchQuestion(question, rows);
+  } catch (e) {
+    // Geminiが一時的に混雑/エラーの場合は、保険として単純な文字列一致で
+    // 表の中に(ほぼ)同じ質問がないか探す。それも見つからなければ担当者エスカレーションへ。
+    console.error('matchQuestionに失敗しました。文字列一致にフォールバックします:', e);
+    result = fallbackMatchQuestion(question, rows);
+  }
 
   if (result.matched && result.answer) {
+    const note = result.fallback ? '（簡易一致のため、表現が異なる場合があります）\n' : '';
     await replyToMessage({
       roomId,
       toAccountId: senderId,
       toMessageId: messageId,
-      body: `${result.answer}\n\n（Q&A表 ${result.rowNumber}行目を参照）`,
+      body: `${result.answer}\n\n${note}（Q&A表 ${result.rowNumber}行目を参照）`,
     });
     log(`即答しました（行${result.rowNumber}）: ${question}`);
     return;
