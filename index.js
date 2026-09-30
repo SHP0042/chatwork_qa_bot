@@ -36,7 +36,7 @@ const config = {
 
   // LLM
   geminiApiKey: required('GEMINI_API_KEY'),
-  geminiModel: process.env.GEMINI_MODEL || 'gemini-2.0-flash',
+ geminiModel: process.env.GEMINI_MODEL || 'gemini-3.8-flash',
 
   // Scheduling / auth
   cronSecret: required('CRON_SECRET', 'change-me'),
