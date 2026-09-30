@@ -485,6 +485,21 @@ function fallbackMatchQuestion(question, faqRows) {
   return { matched: false };
 }
 
+// 表の質問文と完全（正規化後）に一致する場合だけ、AIを使わず確実に即答するための判定。
+// Geminiの確信度判定に左右されず、「一度登録された質問と同じ聞き方」なら必ず同じ答えが返るようにする。
+function exactMatchQuestion(question, faqRows) {
+  const normQuestion = normalizeForMatch(question);
+  if (!normQuestion) return { matched: false };
+  for (const row of faqRows) {
+    const normRowQ = normalizeForMatch(row.question);
+    if (!normRowQ) continue;
+    if (normQuestion === normRowQ) {
+      return { matched: true, rowNumber: row.rowNumber, answer: row.answer, confidence: 1, exact: true };
+    }
+  }
+  return { matched: false };
+}
+
 // ============================================================
 // businessDays
 // ============================================================
@@ -596,14 +611,20 @@ async function processIncomingMessages(messages, { log = console.log } = {}) {
 async function handleQuestion({ question, senderId, messageId, roomId, log }) {
   if (!question) return;
   const { rows } = await readFaqTable();
-  let result;
-  try {
-    result = await matchQuestion(question, rows);
-  } catch (e) {
-    // Geminiが一時的に混雑/エラーの場合は、保険として単純な文字列一致で
-    // 表の中に(ほぼ)同じ質問がないか探す。それも見つからなければ担当者エスカレーションへ。
-    console.error('matchQuestionに失敗しました。文字列一致にフォールバックします:', e);
-    result = fallbackMatchQuestion(question, rows);
+
+  // まず、表の質問文と完全に(正規化後)一致するものがあれば、AIの判定を待たず確実に即答する。
+  // これにより「一度登録された質問と同じ聞き方」であれば、Geminiの確信度に左右されず必ず答えが返る。
+  let result = exactMatchQuestion(question, rows);
+
+  if (!result.matched) {
+    try {
+      result = await matchQuestion(question, rows);
+    } catch (e) {
+      // Geminiが一時的に混雑/エラーの場合は、保険として単純な文字列一致で
+      // 表の中に(ほぼ)同じ質問がないか探す。それも見つからなければ担当者エスカレーションへ。
+      console.error('matchQuestionに失敗しました。文字列一致にフォールバックします:', e);
+      result = fallbackMatchQuestion(question, rows);
+    }
   }
 
   if (result.matched && result.answer) {
