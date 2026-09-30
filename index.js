@@ -296,13 +296,14 @@ async function readFaqTable(overrideGid, overrideName) {
   if (config.faqQuestionCol) qIdx = colLetterToIndex(config.faqQuestionCol);
   if (config.faqAnswerCol) aIdxList = [colLetterToIndex(config.faqAnswerCol)];
 
-  // 実際の列見出し行を探す。シートの1〜2行目が表タイトルだけの行で、
-  // 本当の列見出し（質問・対応など）がそれより下の行にあるケースに対応するため、
-  // 先頭の数行を見て「質問キーワードと回答/対応キーワードの両方が見つかる行」を見出し行とみなす。
+  // 実際の列見出し行を探す。シートの上の方に「質問」「対応」などの単語を含む
+  // セクション見出し／表タイトルの行があり、本当の列見出し（質問・対応など）は
+  // それより下の行にあるケースがあるため、先頭の数行の中で条件に合う行が複数あれば
+  // 一番下（＝より具体的な、実データに近い）行を見出し行として採用する。
   let headerRowIndex = 0;
   if (qIdx === undefined || aIdxList === undefined) {
     const searchLimit = Math.min(values.length, 10);
-    let found = false;
+    let candidate = null;
     for (let r = 0; r < searchLimit; r++) {
       const row = values[r];
       const qMatch = row.findIndex((h) => FAQ_QUESTION_KEYWORDS.some((k) => (h || '').includes(k)));
@@ -310,14 +311,14 @@ async function readFaqTable(overrideGid, overrideName) {
         .map((h, idx) => (FAQ_ANSWER_KEYWORDS.some((k) => (h || '').includes(k)) ? idx : -1))
         .filter((idx) => idx !== -1);
       if (qMatch !== -1 && aMatches.length > 0) {
-        headerRowIndex = r;
-        if (qIdx === undefined) qIdx = qMatch;
-        if (aIdxList === undefined) aIdxList = aMatches;
-        found = true;
-        break;
+        candidate = { headerRowIndex: r, qMatch, aMatches };
       }
     }
-    if (!found) {
+    if (candidate) {
+      headerRowIndex = candidate.headerRowIndex;
+      if (qIdx === undefined) qIdx = candidate.qMatch;
+      if (aIdxList === undefined) aIdxList = candidate.aMatches;
+    } else {
       headerRowIndex = 0;
       if (qIdx === undefined) qIdx = 0;
       if (aIdxList === undefined) aIdxList = [1];
