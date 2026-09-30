@@ -1,0 +1,19 @@
+{
+  "name": "chatwork-qa-bot",
+  "version": "1.0.0",
+  "description": "Chatwork グループ向け Q&A 自動回答ボット（Googleスプレッドシート + Gemini無料枠）",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "license": "UNLICENSED",
+  "dependencies": {
+    "express": "^4.19.2",
+    "googleapis": "^140.0.1",
+    "@google/generative-ai": "^0.21.0",
+    "node-fetch": "^3.3.2",
+    "dotenv": "^16.4.5",
+    "japanese-holidays": "^1.0.10"
+  }
+}
