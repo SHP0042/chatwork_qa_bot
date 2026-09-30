@@ -233,6 +233,22 @@ function colLetterToIndex(letter) {
   return n - 1;
 }
 
+function indexToColLetter(index) {
+  let n = index + 1;
+  let s = '';
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    s = String.fromCharCode(65 + rem) + s;
+    n = Math.floor((n - 1) / 26);
+  }
+  return s;
+}
+
+const FAQ_QUESTION_KEYWORDS = ['質問', 'Q&A', 'Question', '設問'];
+// 「対応」も回答列の見出しとして扱う（実際のシートで「回答」ではなく「対応」という
+// 見出しが使われているケースがあるため）。
+const FAQ_ANSWER_KEYWORDS = ['回答', '対応', 'A ', 'Answer', '返信'];
+
 async function readFaqTable() {
   const title = await resolveFaqSheetTitle();
   const sheets = await getSheets();
@@ -242,36 +258,76 @@ async function readFaqTable() {
   });
   const values = res.data.values || [];
   if (values.length === 0) {
-    return { title, headerRow: [], questionColIndex: 0, answerColIndex: 1, rows: [] };
+    return {
+      title,
+      headerRowIndex: 0,
+      headerRow: [],
+      questionColIndex: 0,
+      answerColIndex: 1,
+      answerColIndexes: [1],
+      rows: [],
+    };
   }
-  const header = values[0];
 
-  let qIdx, aIdx;
+  let qIdx, aIdxList;
   if (config.faqQuestionCol) qIdx = colLetterToIndex(config.faqQuestionCol);
-  if (config.faqAnswerCol) aIdx = colLetterToIndex(config.faqAnswerCol);
+  if (config.faqAnswerCol) aIdxList = [colLetterToIndex(config.faqAnswerCol)];
 
-  if (qIdx === undefined || aIdx === undefined) {
-    const findCol = (keywords) =>
-      header.findIndex((h) => keywords.some((k) => (h || '').includes(k)));
-    if (qIdx === undefined) {
-      qIdx = findCol(['質問', 'Q&A', 'Question', '設問']);
-      if (qIdx === -1) qIdx = 0;
+  // 実際の列見出し行を探す。シートの1行目が表タイトルだけの行（例:「質問」の1セルのみ）で、
+  // 本当の列見出し（質問・対応など）が2行目以降にあるケースに対応するため、
+  // 先頭の数行を見て「質問キーワードと回答/対応キーワードの両方が見つかる行」を見出し行とみなす。
+  let headerRowIndex = 0;
+  if (qIdx === undefined || aIdxList === undefined) {
+    const searchLimit = Math.min(values.length, 5);
+    let found = false;
+    for (let r = 0; r < searchLimit; r++) {
+      const row = values[r];
+      const qMatch = row.findIndex((h) => FAQ_QUESTION_KEYWORDS.some((k) => (h || '').includes(k)));
+      const aMatches = row
+        .map((h, idx) => (FAQ_ANSWER_KEYWORDS.some((k) => (h || '').includes(k)) ? idx : -1))
+        .filter((idx) => idx !== -1);
+      if (qMatch !== -1 && aMatches.length > 0) {
+        headerRowIndex = r;
+        if (qIdx === undefined) qIdx = qMatch;
+        if (aIdxList === undefined) aIdxList = aMatches;
+        found = true;
+        break;
+      }
     }
-    if (aIdx === undefined) {
-      aIdx = findCol(['回答', 'A ', 'Answer', '返信']);
-      if (aIdx === -1) aIdx = 1;
+    if (!found) {
+      headerRowIndex = 0;
+      if (qIdx === undefined) qIdx = 0;
+      if (aIdxList === undefined) aIdxList = [1];
     }
   }
 
+  const header = values[headerRowIndex] || [];
   const rows = [];
-  for (let i = 1; i < values.length; i++) {
+  for (let i = headerRowIndex + 1; i < values.length; i++) {
     const row = values[i];
     const question = (row[qIdx] || '').trim();
-    const answer = (row[aIdx] || '').trim();
+    // 回答列が複数ある場合（例: 対応・対応・対応・対応）は、左から見て
+    // 最初に中身が入っている列をその行の回答として採用する。
+    let answer = '';
+    for (const aIdx of aIdxList) {
+      const cell = (row[aIdx] || '').trim();
+      if (cell) {
+        answer = cell;
+        break;
+      }
+    }
     if (!question && !answer) continue;
     rows.push({ rowNumber: i + 1, question, answer });
   }
-  return { title, headerRow: header, questionColIndex: qIdx, answerColIndex: aIdx, rows };
+  return {
+    title,
+    headerRowIndex,
+    headerRow: header,
+    questionColIndex: qIdx,
+    answerColIndex: aIdxList[0],
+    answerColIndexes: aIdxList,
+    rows,
+  };
 }
 
 async function appendFaqRow(question, answer) {
@@ -781,6 +837,33 @@ app.get('/debug', async (req, res) => {
         account_id: String(m.account.account_id),
         name: m.account.name,
         body: m.body,
+      })),
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok: false, error: String(e.message || e) });
+  }
+});
+
+// 一時的な調査用エンドポイント。Q&A表の中身をそのまま確認するため。原因が分かったら削除してOK。
+app.get('/debug-sheet', async (req, res) => {
+  if (!checkSecret(req, res)) return;
+  try {
+    const { title, headerRowIndex, headerRow, questionColIndex, answerColIndex, answerColIndexes, rows } =
+      await readFaqTable();
+    res.json({
+      sheetTitle: title,
+      headerRowNumber: headerRowIndex + 1,
+      headerRow,
+      questionColumn: indexToColLetter(questionColIndex),
+      answerColumnPrimary: indexToColLetter(answerColIndex),
+      answerColumnsAll: answerColIndexes.map(indexToColLetter),
+      rowCount: rows.length,
+      rows: rows.map((r) => ({
+        rowNumber: r.rowNumber,
+        question: r.question,
+        questionNormalized: normalizeForMatch(r.question),
+        answerPreview: (r.answer || '').slice(0, 60),
       })),
     });
   } catch (e) {
