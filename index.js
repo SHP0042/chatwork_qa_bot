@@ -323,10 +323,14 @@ async function readFaqTable(overrideGid, overrideName) {
       const question = (row[block.questionColIndex] || '').trim();
       // 回答列が複数ある場合は、中身が入っている列をすべてつなげてその行の回答とする
       // （例: C列に短い回答、D列により詳しい回答が書かれているようなケースに対応）。
+      // 2列以上に中身がある場合は、Chatworkの[info]枠で列ごとに見た目を分ける。
       const answerParts = block.answerColIndexes
         .map((idx) => (row[idx] || '').trim())
         .filter(Boolean);
-      const answer = answerParts.join('\n\n');
+      const answer =
+        answerParts.length > 1
+          ? answerParts.map((part) => `[info]${part}[/info]`).join('\n')
+          : answerParts.join('');
       if (!question && !answer) continue;
       rows.push({ rowNumber: i + 1, question, answer, questionColumn: block.questionCol });
     }
