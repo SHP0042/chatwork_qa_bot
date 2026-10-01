@@ -329,7 +329,7 @@ async function readFaqTable(overrideGid, overrideName) {
         .filter(Boolean);
       const answer =
         answerParts.length > 1
-          ? answerParts.map((part) => `[info]${part}[/info]`).join('\n')
+          ? answerParts.map((part) => `[info]\n${part}\n[/info]`).join('\n')
           : answerParts.join('');
       if (!question && !answer) continue;
       rows.push({ rowNumber: i + 1, question, answer, questionColumn: block.questionCol });
