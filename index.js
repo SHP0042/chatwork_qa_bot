@@ -478,7 +478,8 @@ const SYSTEM_INSTRUCTION = `あなたは不動産会社の顧客対応チャッ�
 必ず与えられた「Q&A表」に書かれている内容だけを根拠に回答してください。
 表に無い内容を推測したり、一般知識で補ったりすることは絶対にしないでください。
 表の中に質問と意味が一致する、または十分に近い項目があれば matched=true とし、
-その行番号(rowNumber)と、表の回答をもとにした自然な日本語の回答文(answer)を返してください。
+その行番号(rowNumber)を返してください。実際にお客様へ送る回答文は、あなたが書いた
+answerではなく表に書かれている内容がそのまま使われるため、answerは簡単な要約で構いません。
 表に該当する項目が無い、もしくは自信が持てない場合は matched=false としてください（answerやrowNumberは省略してよい）。
 confidenceは0〜1で、0.75未満の場合は原則matched=falseとしてください。`;
 
@@ -690,6 +691,17 @@ async function handleQuestion({ question, senderId, messageId, roomId, log }) {
   if (!result.matched) {
     try {
       result = await matchQuestion(question, rows);
+      // Geminiは「どの行が一致するか」の判定役であり、実際にお客様へ送る文面は
+      // 表に書かれている内容をそのまま使う（Gemini自身に回答文を書かせると、
+      // 複数列(C〜F等)の内容が要約されて一部消えたり、[info]枠が失われたりするため）。
+      if (result.matched && result.rowNumber) {
+        const matchedRow = rows.find((r) => r.rowNumber === result.rowNumber);
+        if (matchedRow) {
+          result.answer = matchedRow.answer;
+        } else {
+          result.matched = false;
+        }
+      }
     } catch (e) {
       // Geminiが一時的に混雑/エラーの場合は、保険として単純な文字列一致で
       // 表の中に(ほぼ)同じ質問がないか探す。それも見つからなければ担当者エスカレーションへ。
