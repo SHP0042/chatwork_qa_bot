@@ -30,8 +30,13 @@ const config = {
   faqSheetGid: process.env.FAQ_SHEET_GID || '929625368',
   faqSheetName: process.env.FAQ_SHEET_NAME || null,
   pendingSheetName: process.env.PENDING_SHEET_NAME || 'Bot_Pending',
-  faqQuestionCol: process.env.FAQ_QUESTION_COL || null,
-  faqAnswerCol: process.env.FAQ_ANSWER_COL || null,
+  // 「対応」という単語は回答文の中にも普通に出てくるため、見出し行の自動判定は
+  // 誤検出しやすい。実際のシート構造(質問はB列、回答はC〜F列、見出しは3行目)を
+  // 既定値として直接指定し、自動判定はこれらが空の場合のみのフォールバックとする。
+  faqHeaderRow: parseInt(process.env.FAQ_HEADER_ROW || '3', 10),
+  faqQuestionCol: process.env.FAQ_QUESTION_COL || 'B',
+  // カンマ区切りで複数列を指定可能（左から見て最初に中身がある列をその行の回答とする）。
+  faqAnswerCol: process.env.FAQ_ANSWER_COL || 'C,D,E,F',
   googleServiceAccountJson: required('GOOGLE_SERVICE_ACCOUNT_JSON'),
 
   // LLM
@@ -294,13 +299,23 @@ async function readFaqTable(overrideGid, overrideName) {
 
   let qIdx, aIdxList;
   if (config.faqQuestionCol) qIdx = colLetterToIndex(config.faqQuestionCol);
-  if (config.faqAnswerCol) aIdxList = [colLetterToIndex(config.faqAnswerCol)];
+  if (config.faqAnswerCol) {
+    aIdxList = config.faqAnswerCol
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((letter) => colLetterToIndex(letter));
+  }
 
-  // 実際の列見出し行を探す。シートの上の方に「質問」「対応」などの単語を含む
-  // セクション見出し／表タイトルの行があり、本当の列見出し（質問・対応など）は
-  // それより下の行にあるケースがあるため、先頭の数行の中で条件に合う行が複数あれば
-  // 一番下（＝より具体的な、実データに近い）行を見出し行として採用する。
+  // 見出し行の位置。FAQ_HEADER_ROW が指定されていればそれを使う（「対応」のような
+  // 回答文にもよく出てくる単語をキーワードに自動判定すると、データ行を誤って
+  // 見出しと判定してしまうことがあるため、既定ではこちらを優先する）。
   let headerRowIndex = 0;
+  if (config.faqHeaderRow) {
+    headerRowIndex = config.faqHeaderRow - 1;
+  }
+
+  // 列・見出し行のどちらかが指定されていない場合のみ、キーワードによる自動判定を行う。
   if (qIdx === undefined || aIdxList === undefined) {
     const searchLimit = Math.min(values.length, 10);
     let candidate = null;
@@ -315,11 +330,10 @@ async function readFaqTable(overrideGid, overrideName) {
       }
     }
     if (candidate) {
-      headerRowIndex = candidate.headerRowIndex;
+      if (!config.faqHeaderRow) headerRowIndex = candidate.headerRowIndex;
       if (qIdx === undefined) qIdx = candidate.qMatch;
       if (aIdxList === undefined) aIdxList = candidate.aMatches;
     } else {
-      headerRowIndex = 0;
       if (qIdx === undefined) qIdx = 0;
       if (aIdxList === undefined) aIdxList = [1];
     }
