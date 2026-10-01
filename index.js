@@ -31,12 +31,13 @@ const config = {
   faqSheetName: process.env.FAQ_SHEET_NAME || null,
   pendingSheetName: process.env.PENDING_SHEET_NAME || 'Bot_Pending',
   // 「対応」という単語は回答文の中にも普通に出てくるため、見出し行の自動判定は
-  // 誤検出しやすい。実際のシート構造(質問はB列、回答はC〜F列、見出しは3行目)を
-  // 既定値として直接指定し、自動判定はこれらが空の場合のみのフォールバックとする。
+  // 誤検出しやすい。実際のシート構造(見出しは3行目)を既定値として直接指定する。
   faqHeaderRow: parseInt(process.env.FAQ_HEADER_ROW || '3', 10),
-  faqQuestionCol: process.env.FAQ_QUESTION_COL || 'B',
-  // カンマ区切りで複数列を指定可能（左から見て最初に中身がある列をその行の回答とする）。
-  faqAnswerCol: process.env.FAQ_ANSWER_COL || 'C,D,E,F',
+  // このシートには「質問列→回答列」の組が複数並んでいる(B列の質問にC〜F列が回答、
+  // L列の質問(場面)にM〜P列が回答、など)。"質問列:回答列,回答列,...;質問列:回答列,..."
+  // の形式で、セミコロン区切りで複数組を指定できる。各回答列は中身がある列を
+  // すべて(複数あれば改行区切りで)つなげてその行の回答とする。
+  faqBlocks: process.env.FAQ_BLOCKS || 'B:C,D,E,F;L:M,N,O,P',
   googleServiceAccountJson: required('GOOGLE_SERVICE_ACCOUNT_JSON'),
 
   // LLM
@@ -272,10 +273,29 @@ function indexToColLetter(index) {
   return s;
 }
 
-const FAQ_QUESTION_KEYWORDS = ['質問', 'Q&A', 'Question', '設問'];
-// 「対応」も回答列の見出しとして扱う（実際のシートで「回答」ではなく「対応」という
-// 見出しが使われているケースがあるため）。
-const FAQ_ANSWER_KEYWORDS = ['回答', '対応', 'A ', 'Answer', '返信'];
+// FAQ_BLOCKS ("B:C,D,E,F;L:M,N,O,P" のような文字列) を、
+// 質問列・回答列(複数可)の組の配列にパースする。
+function parseFaqBlocks(raw) {
+  return (raw || '')
+    .split(';')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((blockStr) => {
+      const [qColRaw, aColsRaw] = blockStr.split(':');
+      const questionCol = (qColRaw || '').trim();
+      const answerCols = (aColsRaw || '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      return {
+        questionCol,
+        answerCols,
+        questionColIndex: colLetterToIndex(questionCol),
+        answerColIndexes: answerCols.map((c) => colLetterToIndex(c)),
+      };
+    })
+    .filter((b) => b.questionCol && b.answerCols.length > 0);
+}
 
 async function readFaqTable(overrideGid, overrideName) {
   const title = await resolveFaqSheetTitle(overrideGid, overrideName);
@@ -285,96 +305,49 @@ async function readFaqTable(overrideGid, overrideName) {
     range: `${title}`,
   });
   const values = res.data.values || [];
-  if (values.length === 0) {
-    return {
-      title,
-      headerRowIndex: 0,
-      headerRow: [],
-      questionColIndex: 0,
-      answerColIndex: 1,
-      answerColIndexes: [1],
-      rows: [],
-    };
+  const blocks = parseFaqBlocks(config.faqBlocks);
+
+  if (values.length === 0 || blocks.length === 0) {
+    return { title, headerRowIndex: 0, headerRow: [], blocks, rows: [] };
   }
 
-  let qIdx, aIdxList;
-  if (config.faqQuestionCol) qIdx = colLetterToIndex(config.faqQuestionCol);
-  if (config.faqAnswerCol) {
-    aIdxList = config.faqAnswerCol
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean)
-      .map((letter) => colLetterToIndex(letter));
-  }
-
-  // 見出し行の位置。FAQ_HEADER_ROW が指定されていればそれを使う（「対応」のような
-  // 回答文にもよく出てくる単語をキーワードに自動判定すると、データ行を誤って
-  // 見出しと判定してしまうことがあるため、既定ではこちらを優先する）。
-  let headerRowIndex = 0;
-  if (config.faqHeaderRow) {
-    headerRowIndex = config.faqHeaderRow - 1;
-  }
-
-  // 列・見出し行のどちらかが指定されていない場合のみ、キーワードによる自動判定を行う。
-  if (qIdx === undefined || aIdxList === undefined) {
-    const searchLimit = Math.min(values.length, 10);
-    let candidate = null;
-    for (let r = 0; r < searchLimit; r++) {
-      const row = values[r];
-      const qMatch = row.findIndex((h) => FAQ_QUESTION_KEYWORDS.some((k) => (h || '').includes(k)));
-      const aMatches = row
-        .map((h, idx) => (FAQ_ANSWER_KEYWORDS.some((k) => (h || '').includes(k)) ? idx : -1))
-        .filter((idx) => idx !== -1);
-      if (qMatch !== -1 && aMatches.length > 0) {
-        candidate = { headerRowIndex: r, qMatch, aMatches };
-      }
-    }
-    if (candidate) {
-      if (!config.faqHeaderRow) headerRowIndex = candidate.headerRowIndex;
-      if (qIdx === undefined) qIdx = candidate.qMatch;
-      if (aIdxList === undefined) aIdxList = candidate.aMatches;
-    } else {
-      if (qIdx === undefined) qIdx = 0;
-      if (aIdxList === undefined) aIdxList = [1];
-    }
-  }
-
+  // 見出し行の位置。このシートでは複数の質問・回答列の組すべてが同じ見出し行(3行目)を
+  // 共有している。
+  const headerRowIndex = config.faqHeaderRow ? config.faqHeaderRow - 1 : 0;
   const header = values[headerRowIndex] || [];
+
   const rows = [];
   for (let i = headerRowIndex + 1; i < values.length; i++) {
     const row = values[i];
-    const question = (row[qIdx] || '').trim();
-    // 回答列が複数ある場合（例: 対応・対応・対応・対応）は、左から見て
-    // 最初に中身が入っている列をその行の回答として採用する。
-    let answer = '';
-    for (const aIdx of aIdxList) {
-      const cell = (row[aIdx] || '').trim();
-      if (cell) {
-        answer = cell;
-        break;
-      }
+    for (const block of blocks) {
+      const question = (row[block.questionColIndex] || '').trim();
+      // 回答列が複数ある場合は、中身が入っている列をすべてつなげてその行の回答とする
+      // （例: C列に短い回答、D列により詳しい回答が書かれているようなケースに対応）。
+      const answerParts = block.answerColIndexes
+        .map((idx) => (row[idx] || '').trim())
+        .filter(Boolean);
+      const answer = answerParts.join('\n\n');
+      if (!question && !answer) continue;
+      rows.push({ rowNumber: i + 1, question, answer, questionColumn: block.questionCol });
     }
-    if (!question && !answer) continue;
-    rows.push({ rowNumber: i + 1, question, answer });
   }
   return {
     title,
     headerRowIndex,
     headerRow: header,
-    questionColIndex: qIdx,
-    answerColIndex: aIdxList[0],
-    answerColIndexes: aIdxList,
+    blocks,
     rows,
   };
 }
 
 async function appendFaqRow(question, answer) {
-  const { title, questionColIndex, answerColIndex } = await readFaqTable();
+  const { title, blocks } = await readFaqTable();
+  const primary = blocks[0] || { questionColIndex: 1, answerColIndexes: [2] };
   const sheets = await getSheets();
-  const width = Math.max(questionColIndex, answerColIndex) + 1;
+  const width = Math.max(primary.questionColIndex, ...primary.answerColIndexes) + 1;
   const row = new Array(width).fill('');
-  row[questionColIndex] = question;
-  row[answerColIndex] = answer;
+  row[primary.questionColIndex] = question;
+  row[primary.answerColIndexes[0]] = answer;
   await sheets.spreadsheets.values.append({
     spreadsheetId: config.sheetId,
     range: `${title}`,
@@ -921,18 +894,16 @@ app.get('/debug-sheet', async (req, res) => {
       return;
     }
 
-    const { title, headerRowIndex, headerRow, questionColIndex, answerColIndex, answerColIndexes, rows } =
-      await readFaqTable(overrideGid, overrideName);
+    const { title, headerRowIndex, headerRow, blocks, rows } = await readFaqTable(overrideGid, overrideName);
     res.json({
       sheetTitle: title,
       headerRowNumber: headerRowIndex + 1,
       headerRow,
-      questionColumn: indexToColLetter(questionColIndex),
-      answerColumnPrimary: indexToColLetter(answerColIndex),
-      answerColumnsAll: answerColIndexes.map(indexToColLetter),
+      blocks: blocks.map((b) => ({ questionColumn: b.questionCol, answerColumns: b.answerCols })),
       rowCount: rows.length,
       rows: rows.map((r) => ({
         rowNumber: r.rowNumber,
+        questionColumn: r.questionColumn,
         question: r.question,
         questionNormalized: normalizeForMatch(r.question),
         answerPreview: (r.answer || '').slice(0, 60),
