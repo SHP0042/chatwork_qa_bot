@@ -706,14 +706,30 @@ function splitIntoCandidateQuestions(text) {
   return [...new Set(pieces)];
 }
 
-// 分割した候補ごとに「完全一致」だけを試す(Geminiは呼ばない)。
-// あいまいな簡易一致まで使うと、短い断片同士でたまたま文字列が重なって
-// 誤った回答を出すおそれがあるため、ここでは確実な完全一致のみを採用する。
-function matchCandidatesByExactMatch(candidates, faqRows) {
+// 分割した候補ごとに、個別に質問した場合と同じ判定(完全一致→Gemini→文字列一致)を行う。
+// 1通に質問が多いほどGeminiの呼び出し回数が増え、混雑(503)の影響を受けやすくなる点に注意。
+async function matchCandidatesForPartialAnswers(candidates, faqRows) {
   const matched = [];
   const unmatchedTexts = [];
   for (const q of candidates) {
-    const r = exactMatchQuestion(q, faqRows);
+    let r = exactMatchQuestion(q, faqRows);
+    if (!r.matched) {
+      try {
+        r = await matchQuestion(q, faqRows);
+        // 個別質問の時と同様、実際に送る文面はGemini自身の生成結果ではなく表の内容をそのまま使う。
+        if (r.matched && r.rowNumber) {
+          const matchedRow = faqRows.find((row) => row.rowNumber === r.rowNumber);
+          if (matchedRow) {
+            r.answer = matchedRow.answer;
+          } else {
+            r.matched = false;
+          }
+        }
+      } catch (e) {
+        console.error(`候補質問の判定に失敗しました。文字列一致にフォールバックします(候補: ${q}):`, e);
+        r = fallbackMatchQuestion(q, faqRows);
+      }
+    }
     if (r.matched && r.answer) {
       matched.push({ question: q, ...r });
     } else {
@@ -766,14 +782,17 @@ async function handleQuestion({ question, senderId, messageId, roomId, log }) {
 
   if (!result.matched) {
     // メッセージ全体では一致しなかった場合、1通に複数の質問が混ざっている可能性があるので、
-    // 改行や「？」で区切った候補ごとに完全一致を試し、答えられるものだけ拾う。
+    // 改行や「？」で区切った候補ごとに判定し、答えられるものだけ拾う。
     const candidates = splitIntoCandidateQuestions(question);
     if (candidates.length > 1) {
-      const { matched, unmatchedTexts } = matchCandidatesByExactMatch(candidates, rows);
+      const { matched, unmatchedTexts } = await matchCandidatesForPartialAnswers(candidates, rows);
       if (matched.length > 0) {
         const leftover = unmatchedTexts.join('\n').trim();
         const answerBody = matched
-          .map((m) => `${m.answer}\n（Q&A表 ${m.rowNumber}行目を参照）`)
+          .map((m) => {
+            const note = m.fallback ? '（簡易一致のため、表現が異なる場合があります）\n' : '';
+            return `【質問】${m.question}\n【回答】${m.answer}\n\n${note}（Q&A表 ${m.rowNumber}行目を参照）`;
+          })
           .join('\n\n');
         const leftoverNote = leftover
           ? '\n\nなお、上記以外のご質問につきましては、ただいま担当者に確認しております。少々お待ちください。'
@@ -820,7 +839,7 @@ async function handleQuestion({ question, senderId, messageId, roomId, log }) {
       roomId,
       toAccountId: senderId,
       toMessageId: messageId,
-      body: `${result.answer}\n\n${note}（Q&A表 ${result.rowNumber}行目を参照）`,
+      body: `【質問】${question}\n【回答】${result.answer}\n\n${note}（Q&A表 ${result.rowNumber}行目を参照）`,
     });
     log(`即答しました（行${result.rowNumber}）: ${question}`);
     return;
