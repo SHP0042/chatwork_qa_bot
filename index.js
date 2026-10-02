@@ -6,6 +6,11 @@ import fetch from 'node-fetch';
 import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai';
 import holiday_jp from 'japanese-holidays';
 
+// サーバーの時刻をUTCではなく日本時間(JST)に固定する。
+// これを最初に設定しないと、営業日計算や「朝9時」などの時刻指定が
+// すべて9時間ずれてしまう(例: 9時指定のつもりが日本時間の18時になる)。
+process.env.TZ = 'Asia/Tokyo';
+
 // ============================================================
 // config
 // ============================================================
@@ -102,6 +107,23 @@ async function getNewMessages(roomId = config.chatworkRoomId) {
 
 async function getRoomMembers(roomId = config.chatworkRoomId) {
   return (await cwFetch(`/rooms/${roomId}/members`)) || [];
+}
+
+// 指定したメッセージがまだ存在するか(お客様が削除していないか)を確認する。
+// 判定できない場合(Chatwork側の一時的なエラーなど)は、誤って催促を止めてしまわないよう
+// 「存在する」扱いにする。
+async function messageExists(messageId, roomId = config.chatworkRoomId) {
+  if (!messageId) return true;
+  const res = await fetch(`${CW_BASE_URL}/rooms/${roomId}/messages/${messageId}`, {
+    headers: { 'X-ChatWorkToken': config.chatworkApiToken },
+  });
+  if (res.status === 404) return false;
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    console.error(`メッセージ存在確認でエラーが発生しました(message_id=${messageId}): ${res.status} ${text}`);
+    return true;
+  }
+  return true;
 }
 
 async function sendMessage(body, roomId = config.chatworkRoomId) {
@@ -595,6 +617,9 @@ function addBusinessDays(date, n) {
 function hasElapsedBusinessDays(requestedAtIso, businessDays) {
   const requestedAt = new Date(requestedAtIso);
   const deadline = addBusinessDays(requestedAt, businessDays);
+  // 催促は深夜などに送られないよう、最速でも(計算上の日付の)朝9時以降にする。
+  // 例えば深夜0時に質問が来て1営業日後に設定されていても、翌営業日の9時より前には送らない。
+  deadline.setHours(9, 0, 0, 0);
   return new Date() >= deadline;
 }
 
@@ -685,6 +710,16 @@ async function processIncomingMessages(messages, { log = console.log } = {}) {
 // 番号無しの質問文と完全に同じ言い方として一致させられる。
 function stripLeadingListMarker(text) {
   return text.replace(/^[\s]*(?:[0-9０-９]{1,3}[.．、)）]|[①-⑳]|[・\-*])[\s]*/, '');
+}
+
+// 回答できなかった質問を、お客様が元々送ってきたときのような読みやすい番号付きの
+// 見た目(①②③…)に揃えてホルダーへのエスカレーション文に入れる。
+// ⑳(20個目)より多い場合は「21.」のような表記にフォールバックする。
+const CIRCLED_NUMBERS = ['①','②','③','④','⑤','⑥','⑦','⑧','⑨','⑩','⑪','⑫','⑬','⑭','⑮','⑯','⑰','⑱','⑲','⑳'];
+function numberLines(lines) {
+  return lines
+    .map((line, i) => `${CIRCLED_NUMBERS[i] || `${i + 1}.`}${line}`)
+    .join('\n');
 }
 
 // 1通のメッセージに複数の質問が混ざっている場合に備えて、改行や「？」「?」で区切って
@@ -787,7 +822,7 @@ async function handleQuestion({ question, senderId, messageId, roomId, log }) {
     if (candidates.length > 1) {
       const { matched, unmatchedTexts } = await matchCandidatesForPartialAnswers(candidates, rows);
       if (matched.length > 0) {
-        const leftover = unmatchedTexts.join('\n').trim();
+        const leftover = numberLines(unmatchedTexts).trim();
         const answerBody = matched
           .map((m) => {
             const note = m.fallback ? '（簡易一致のため、表現が異なる場合があります）\n' : '';
@@ -887,6 +922,13 @@ async function runFollowupCheck({ log = console.log } = {}) {
     if (p.status !== 'pending') continue;
     if (p.reminded === 'yes') continue;
     if (!hasElapsedBusinessDays(p.requestedAt, config.followupAfterBusinessDays)) continue;
+
+    const stillExists = await messageExists(p.questionMessageId, p.roomId || config.chatworkRoomId);
+    if (!stillExists) {
+      await updatePendingRow(p.sheetRowNumber, { status: 'cancelled' });
+      log(`元の質問メッセージが削除されていたため、催促を中止しました: ${p.question}`);
+      continue;
+    }
 
     const mentions = config.holderAccountIds.map((id) => mentionTag(id)).join(' ');
     await replyToMessage({
