@@ -653,7 +653,7 @@ async function processIncomingMessages(messages, { log = console.log } = {}) {
 
       const replyTarget = parseReplyTarget(body);
       if (replyTarget && config.holderAccountIds.includes(senderId)) {
-        const handled = await handleHolderReply({ replyTarget, body, senderId, roomId, log });
+        const handled = await handleHolderReply({ replyTarget, body, senderId, roomId, messageId, log });
         if (handled) {
           processed++;
           continue;
@@ -705,21 +705,21 @@ async function processIncomingMessages(messages, { log = console.log } = {}) {
   return { processed };
 }
 
-// 行の先頭についている番号・記号(「1.」「2)」「①」「・」「-」など)を取り除く。
+// 行の先頭についている番号・記号(「1.」「2)」「①」「・」「-」など)を、本文と切り離して取り出す。
 // これにより、「1. 質問文」のように番号つきで送られてきても、表に登録されている
-// 番号無しの質問文と完全に同じ言い方として一致させられる。
-function stripLeadingListMarker(text) {
-  return text.replace(/^[\s]*(?:[0-9０-９]{1,3}[.．、)）]|[①-⑳]|[・\-*])[\s]*/, '');
+// 番号無しの質問文と完全に同じ言い方として一致させられる。また、お客様が元々付けていた
+// 番号(①②③…や1.2.3.など)を、後で担当者への確認メッセージに「そのまま」再利用できる。
+const LIST_MARKER_RE = /^[\s]*([0-9０-９]{1,3}[.．、)）]|[①-⑳]|[・\-*])[\s]*/;
+function splitLeadingListMarker(text) {
+  const m = text.match(LIST_MARKER_RE);
+  if (!m) return { marker: '', rest: text.trim() };
+  return { marker: m[1], rest: text.slice(m[0].length).trim() };
 }
 
-// 回答できなかった質問を、お客様が元々送ってきたときのような読みやすい番号付きの
-// 見た目(①②③…)に揃えてホルダーへのエスカレーション文に入れる。
-// ⑳(20個目)より多い場合は「21.」のような表記にフォールバックする。
-const CIRCLED_NUMBERS = ['①','②','③','④','⑤','⑥','⑦','⑧','⑨','⑩','⑪','⑫','⑬','⑭','⑮','⑯','⑰','⑱','⑲','⑳'];
-function numberLines(lines) {
-  return lines
-    .map((line, i) => `${CIRCLED_NUMBERS[i] || `${i + 1}.`}${line}`)
-    .join('\n');
+// 回答できなかった質問を担当者への確認メッセージに入れるとき、お客様が元々送ってきた
+// 番号(①②③…など)があればそれをそのまま貼り付ける。番号が無かった質問はそのまま表示する。
+function formatLeftoverQuestions(unmatched) {
+  return unmatched.map((c) => (c.marker ? `${c.marker}${c.text}` : c.text)).join('\n');
 }
 
 // 「⇒」「→」で始まる行(担当者が書いた回答案・コメント)や、「▼」「■」などで始まる
@@ -737,8 +737,10 @@ function looksLikeQuestion(text) {
 
 // 1通のメッセージに複数の質問が混ざっている場合に備えて、改行や「？」「?」で区切って
 // 候補の質問に分割する。見つかった候補は後段でそれぞれ完全一致を試す。
+// 各候補は { marker, text } の形で返し、お客様が元々付けていた番号を後段でも使えるようにする。
 function splitIntoCandidateQuestions(text) {
   if (!text) return [];
+  const seen = new Set();
   const pieces = [];
   for (const line of text.split(/\r?\n/)) {
     const trimmedLine = line.trim();
@@ -748,19 +750,23 @@ function splitIntoCandidateQuestions(text) {
     // 1行に複数の質問が「Aは？Bは？」のように続けて書かれていても分割できる。
     const parts = trimmedLine.split(/(?<=[？?])/);
     for (const part of parts) {
-      const p = stripLeadingListMarker(part.trim()).trim();
-      if (p.length >= 4 && looksLikeQuestion(p)) pieces.push(p);
+      const { marker, rest } = splitLeadingListMarker(part.trim());
+      if (rest.length >= 4 && looksLikeQuestion(rest) && !seen.has(rest)) {
+        seen.add(rest);
+        pieces.push({ marker, text: rest });
+      }
     }
   }
-  return [...new Set(pieces)];
+  return pieces;
 }
 
 // 分割した候補ごとに、個別に質問した場合と同じ判定(完全一致→Gemini→文字列一致)を行う。
 // 1通に質問が多いほどGeminiの呼び出し回数が増え、混雑(503)の影響を受けやすくなる点に注意。
 async function matchCandidatesForPartialAnswers(candidates, faqRows) {
   const matched = [];
-  const unmatchedTexts = [];
-  for (const q of candidates) {
+  const unmatched = [];
+  for (const c of candidates) {
+    const q = c.text;
     let r = exactMatchQuestion(q, faqRows);
     if (!r.matched) {
       try {
@@ -782,21 +788,24 @@ async function matchCandidatesForPartialAnswers(candidates, faqRows) {
     if (r.matched && r.answer) {
       matched.push({ question: q, ...r });
     } else {
-      unmatchedTexts.push(q);
+      unmatched.push(c);
     }
   }
-  return { matched, unmatchedTexts };
+  return { matched, unmatched };
 }
 
 async function escalateToHolder({ question, senderId, messageId, roomId, log, partial = false }) {
   const askerName = await resolveMemberName(roomId, senderId);
   const mentions = config.holderAccountIds.map((id) => mentionTag(id)).join(' ');
   const intro = partial
-    ? 'お客様からの質問のうち、Q&A表に無い残りの部分についてご確認をお願いします。'
-    : 'お客様から以下の質問がありました。Q&A表に無い内容のため、ご確認をお願いします。';
+    ? '質問者からの質問のうち、Q&A表に無い残りの部分についてご確認をお願いします。'
+    : '質問者から以下の質問がありました。Q&A表に無い内容のため、ご確認をお願いします。';
+  // 元のご質問のメッセージを探しに行かなくても済むよう、このメッセージに「返信」機能で
+  // 回答してもらう。その際、本文中で質問者を「To」でメンションしてもらうことで、
+  // (引用返信を使わなくても)質問者にも直接通知が届き、Q&A表への登録も自動で行われる。
   const holderMsg = await sendMessage(
     `${mentions}\n${intro}\n` +
-      `このメッセージに「返信」機能で回答いただくと、お客様への回答とQ&A表への登録を自動で行います。\n\n` +
+      `このメッセージに「返信」機能で回答ください。その際、本文の中で質問者(${askerName || '質問者'}様)を「To」でメンションしてから回答すると、質問者にも直接届き、Q&A表への登録も自動で行います。\n\n` +
       `【質問者】${askerName || senderId}\n【質問】${question}`,
     roomId
   );
@@ -834,9 +843,9 @@ async function handleQuestion({ question, senderId, messageId, roomId, log }) {
     // 改行や「？」で区切った候補ごとに判定し、答えられるものだけ拾う。
     const candidates = splitIntoCandidateQuestions(question);
     if (candidates.length > 1) {
-      const { matched, unmatchedTexts } = await matchCandidatesForPartialAnswers(candidates, rows);
+      const { matched, unmatched } = await matchCandidatesForPartialAnswers(candidates, rows);
       if (matched.length > 0) {
-        const leftover = numberLines(unmatchedTexts).trim();
+        const leftover = formatLeftoverQuestions(unmatched).trim();
         const answerBody = matched
           .map((m) => {
             const note = m.fallback ? '（簡易一致のため、表現が異なる場合があります）\n' : '';
@@ -897,10 +906,16 @@ async function handleQuestion({ question, senderId, messageId, roomId, log }) {
   await escalateToHolder({ question, senderId, messageId, roomId, log });
 }
 
-async function handleHolderReply({ replyTarget, body, senderId, roomId, log }) {
+async function handleHolderReply({ replyTarget, body, senderId, roomId, messageId, log }) {
   const pending = await listPendingRows();
+  // ホルダーは基本的に、このボットが送った確認メッセージに「返信」する想定(本文中でお客様を
+  // 「To」メンションしてもらうことで、お客様にも直接通知が届く)。念のため、元のご質問の
+  // メッセージに直接返信した場合でも拾えるようにしておく。
   const target = pending.find(
-    (p) => p.status === 'pending' && String(p.holderRequestMessageId) === String(replyTarget.toMessageId)
+    (p) =>
+      p.status === 'pending' &&
+      (String(p.holderRequestMessageId) === String(replyTarget.toMessageId) ||
+        String(p.questionMessageId) === String(replyTarget.toMessageId))
   );
   if (!target) return false;
 
@@ -909,13 +924,8 @@ async function handleHolderReply({ replyTarget, body, senderId, roomId, log }) {
 
   const holderName = await resolveMemberName(roomId, senderId);
 
-  await replyToMessage({
-    roomId,
-    toAccountId: target.askerAccountId,
-    toMessageId: target.questionMessageId,
-    body: `お待たせいたしました。ご質問について回答いたします。\n\n${answer}`,
-  });
-
+  // お客様への通知は、ホルダーが返信本文に入れた「To」メンション自体で届く(そのメッセージは
+  // そのままチャットワークに残る)。ボット側から改めて返信は送らず、Q&A表への登録のみ行う。
   await appendFaqRow(target.question, answer);
 
   await updatePendingRow(target.sheetRowNumber, {
