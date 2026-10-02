@@ -680,6 +680,13 @@ async function processIncomingMessages(messages, { log = console.log } = {}) {
   return { processed };
 }
 
+// 行の先頭についている番号・記号(「1.」「2)」「①」「・」「-」など)を取り除く。
+// これにより、「1. 質問文」のように番号つきで送られてきても、表に登録されている
+// 番号無しの質問文と完全に同じ言い方として一致させられる。
+function stripLeadingListMarker(text) {
+  return text.replace(/^[\s]*(?:[0-9０-９]{1,3}[.．、)）]|[①-⑳]|[・\-*])[\s]*/, '');
+}
+
 // 1通のメッセージに複数の質問が混ざっている場合に備えて、改行や「？」「?」で区切って
 // 候補の質問に分割する。見つかった候補は後段でそれぞれ完全一致を試す。
 function splitIntoCandidateQuestions(text) {
@@ -692,7 +699,7 @@ function splitIntoCandidateQuestions(text) {
     // 1行に複数の質問が「Aは？Bは？」のように続けて書かれていても分割できる。
     const parts = trimmedLine.split(/(?<=[？?])/);
     for (const part of parts) {
-      const p = part.trim();
+      const p = stripLeadingListMarker(part.trim()).trim();
       if (p.length >= 4) pieces.push(p);
     }
   }
