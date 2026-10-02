@@ -680,15 +680,112 @@ async function processIncomingMessages(messages, { log = console.log } = {}) {
   return { processed };
 }
 
+// 1通のメッセージに複数の質問が混ざっている場合に備えて、改行や「？」「?」で区切って
+// 候補の質問に分割する。見つかった候補は後段でそれぞれ完全一致を試す。
+function splitIntoCandidateQuestions(text) {
+  if (!text) return [];
+  const pieces = [];
+  for (const line of text.split(/\r?\n/)) {
+    const trimmedLine = line.trim();
+    if (!trimmedLine) continue;
+    // 「？」「?」の直後で区切る(区切り文字自体は手前の断片に残す)ので、
+    // 1行に複数の質問が「Aは？Bは？」のように続けて書かれていても分割できる。
+    const parts = trimmedLine.split(/(?<=[？?])/);
+    for (const part of parts) {
+      const p = part.trim();
+      if (p.length >= 4) pieces.push(p);
+    }
+  }
+  return [...new Set(pieces)];
+}
+
+// 分割した候補ごとに「完全一致」だけを試す(Geminiは呼ばない)。
+// あいまいな簡易一致まで使うと、短い断片同士でたまたま文字列が重なって
+// 誤った回答を出すおそれがあるため、ここでは確実な完全一致のみを採用する。
+function matchCandidatesByExactMatch(candidates, faqRows) {
+  const matched = [];
+  const unmatchedTexts = [];
+  for (const q of candidates) {
+    const r = exactMatchQuestion(q, faqRows);
+    if (r.matched && r.answer) {
+      matched.push({ question: q, ...r });
+    } else {
+      unmatchedTexts.push(q);
+    }
+  }
+  return { matched, unmatchedTexts };
+}
+
+async function escalateToHolder({ question, senderId, messageId, roomId, log, partial = false }) {
+  const askerName = await resolveMemberName(roomId, senderId);
+  const mentions = config.holderAccountIds.map((id) => mentionTag(id)).join(' ');
+  const intro = partial
+    ? 'お客様からの質問のうち、Q&A表に無い残りの部分についてご確認をお願いします。'
+    : 'お客様から以下の質問がありました。Q&A表に無い内容のため、ご確認をお願いします。';
+  const holderMsg = await sendMessage(
+    `${mentions}\n${intro}\n` +
+      `このメッセージに「返信」機能で回答いただくと、お客様への回答とQ&A表への登録を自動で行います。\n\n` +
+      `【質問者】${askerName || senderId}\n【質問】${question}`,
+    roomId
+  );
+
+  await appendPendingRow({
+    question,
+    askerAccountId: senderId,
+    askerName,
+    roomId,
+    questionMessageId: messageId,
+    holderRequestMessageId: holderMsg.message_id,
+  });
+
+  if (!partial) {
+    await replyToMessage({
+      roomId,
+      toAccountId: senderId,
+      toMessageId: messageId,
+      body: `ただいま担当者に確認しております。少々お待ちください。`,
+    });
+  }
+  log(`ホルダーへエスカレーションしました${partial ? '(一部)' : ''}: ${question}`);
+}
+
 async function handleQuestion({ question, senderId, messageId, roomId, log }) {
   if (!question) return;
   const { rows } = await readFaqTable();
 
-  // まず、表の質問文と完全に(正規化後)一致するものがあれば、AIの判定を待たず確実に即答する。
-  // これにより「一度登録された質問と同じ聞き方」であれば、Geminiの確信度に左右されず必ず答えが返る。
+  // まず、メッセージ全体で表の質問文と完全に(正規化後)一致するものがあれば、
+  // AIの判定を待たず確実に即答する(1つの質問だけのメッセージは、ここでいつも通り即答される)。
   let result = exactMatchQuestion(question, rows);
 
   if (!result.matched) {
+    // メッセージ全体では一致しなかった場合、1通に複数の質問が混ざっている可能性があるので、
+    // 改行や「？」で区切った候補ごとに完全一致を試し、答えられるものだけ拾う。
+    const candidates = splitIntoCandidateQuestions(question);
+    if (candidates.length > 1) {
+      const { matched, unmatchedTexts } = matchCandidatesByExactMatch(candidates, rows);
+      if (matched.length > 0) {
+        const leftover = unmatchedTexts.join('\n').trim();
+        const answerBody = matched
+          .map((m) => `${m.answer}\n（Q&A表 ${m.rowNumber}行目を参照）`)
+          .join('\n\n');
+        const leftoverNote = leftover
+          ? '\n\nなお、上記以外のご質問につきましては、ただいま担当者に確認しております。少々お待ちください。'
+          : '';
+        await replyToMessage({
+          roomId,
+          toAccountId: senderId,
+          toMessageId: messageId,
+          body: `ご質問のうち、お答えできる部分をまとめてご案内します。\n\n${answerBody}${leftoverNote}`,
+        });
+        log(`複数質問のうち${matched.length}件を自動回答しました: ${question}`);
+
+        if (leftover) {
+          await escalateToHolder({ question: leftover, senderId, messageId, roomId, log, partial: true });
+        }
+        return;
+      }
+    }
+
     try {
       result = await matchQuestion(question, rows);
       // Geminiは「どの行が一致するか」の判定役であり、実際にお客様へ送る文面は
@@ -722,31 +819,7 @@ async function handleQuestion({ question, senderId, messageId, roomId, log }) {
     return;
   }
 
-  const askerName = await resolveMemberName(roomId, senderId);
-  const mentions = config.holderAccountIds.map((id) => mentionTag(id)).join(' ');
-  const holderMsg = await sendMessage(
-    `${mentions}\nお客様から以下の質問がありました。Q&A表に無い内容のため、ご確認をお願いします。\n` +
-      `このメッセージに「返信」機能で回答いただくと、お客様への回答とQ&A表への登録を自動で行います。\n\n` +
-      `【質問者】${askerName || senderId}\n【質問】${question}`,
-    roomId
-  );
-
-  await appendPendingRow({
-    question,
-    askerAccountId: senderId,
-    askerName,
-    roomId,
-    questionMessageId: messageId,
-    holderRequestMessageId: holderMsg.message_id,
-  });
-
-  await replyToMessage({
-    roomId,
-    toAccountId: senderId,
-    toMessageId: messageId,
-    body: `ただいま担当者に確認しております。少々お待ちください。`,
-  });
-  log(`ホルダーへエスカレーションしました: ${question}`);
+  await escalateToHolder({ question, senderId, messageId, roomId, log });
 }
 
 async function handleHolderReply({ replyTarget, body, senderId, roomId, log }) {
