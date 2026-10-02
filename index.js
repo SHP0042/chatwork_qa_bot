@@ -722,6 +722,19 @@ function numberLines(lines) {
     .join('\n');
 }
 
+// 「⇒」「→」で始まる行(担当者が書いた回答案・コメント)や、「▼」「■」などで始まる
+// 見出し行(「▼〇〇様より」など)は、お客様への質問そのものではないので候補にしない。
+function isNonQuestionLine(line) {
+  return /^[⇒→▼■●○◆◇]/.test(line);
+}
+
+// 文末が「か」「？」「?」(閉じカッコや句読点が続いてもよい)で終わっている場合のみ、
+// 質問らしい文として扱う。これにより、挨拶文や締めの一言、見出しなどが
+// 誤って「回答できなかった質問」として担当者への確認メッセージに混ざるのを防ぐ。
+function looksLikeQuestion(text) {
+  return /[か？?][\s　)）」』"'.。！!]*$/.test(text);
+}
+
 // 1通のメッセージに複数の質問が混ざっている場合に備えて、改行や「？」「?」で区切って
 // 候補の質問に分割する。見つかった候補は後段でそれぞれ完全一致を試す。
 function splitIntoCandidateQuestions(text) {
@@ -730,12 +743,13 @@ function splitIntoCandidateQuestions(text) {
   for (const line of text.split(/\r?\n/)) {
     const trimmedLine = line.trim();
     if (!trimmedLine) continue;
+    if (isNonQuestionLine(trimmedLine)) continue;
     // 「？」「?」の直後で区切る(区切り文字自体は手前の断片に残す)ので、
     // 1行に複数の質問が「Aは？Bは？」のように続けて書かれていても分割できる。
     const parts = trimmedLine.split(/(?<=[？?])/);
     for (const part of parts) {
       const p = stripLeadingListMarker(part.trim()).trim();
-      if (p.length >= 4) pieces.push(p);
+      if (p.length >= 4 && looksLikeQuestion(p)) pieces.push(p);
     }
   }
   return [...new Set(pieces)];
@@ -826,9 +840,9 @@ async function handleQuestion({ question, senderId, messageId, roomId, log }) {
         const answerBody = matched
           .map((m) => {
             const note = m.fallback ? '（簡易一致のため、表現が異なる場合があります）\n' : '';
-            return `【質問】${m.question}\n【回答】${m.answer}\n\n${note}（Q&A表 ${m.rowNumber}行目を参照）`;
+            return `[info]\n【質問】${m.question}\n【回答】${m.answer}\n\n${note}（Q&A表 ${m.rowNumber}行目を参照）\n[/info]`;
           })
-          .join('\n\n');
+          .join('\n');
         const leftoverNote = leftover
           ? '\n\nなお、上記以外のご質問につきましては、ただいま担当者に確認しております。少々お待ちください。'
           : '';
