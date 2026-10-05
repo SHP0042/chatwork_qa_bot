@@ -618,7 +618,10 @@ function hasElapsedBusinessDays(requestedAtIso, businessDays) {
   const requestedAt = new Date(requestedAtIso);
   const deadline = addBusinessDays(requestedAt, businessDays);
   // 催促は深夜などに送られないよう、最速でも(計算上の日付の)朝9時以降にする。
-  // 例えば深夜0時に質問が来て1営業日後に設定されていても、翌営業日の9時より前には送らない。
+  // ただし、これは「9時より前には送らない」というブレーキでしかないため、実際に
+  // 9時ぴったりに送らせるには、cron-job.org側のチェック間隔も短くする必要がある
+  // (チェックが12時間おきのままだと、9時を過ぎた後の次のチェック(昼12時、
+  // またそれも失敗すれば翌日0時)まで送信がずれ込む)。
   deadline.setHours(9, 0, 0, 0);
   return new Date() >= deadline;
 }
@@ -732,7 +735,9 @@ function isNonQuestionLine(line) {
 // 質問らしい文として扱う。これにより、挨拶文や締めの一言、見出しなどが
 // 誤って「回答できなかった質問」として担当者への確認メッセージに混ざるのを防ぐ。
 function looksLikeQuestion(text) {
-  return /[か？?][\s　)）」』"'.。！!]*$/.test(text);
+  // 「〜でしょうか」のような「か」「？」「?」止まりだけでなく、
+  // 「〜教えてください」「〜ご教示ください」のような依頼の言い回しも質問として扱う。
+  return /(?:[か？?]|ください|下さい)[\s　)）」』"'.。！!]*$/.test(text);
 }
 
 // 1通のメッセージに複数の質問が混ざっている場合に備えて、改行や「？」「?」で区切って
