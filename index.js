@@ -616,7 +616,10 @@ function addBusinessDays(date, n) {
 
 function hasElapsedBusinessDays(requestedAtIso, businessDays) {
   const requestedAt = new Date(requestedAtIso);
-  const deadline = addBusinessDays(requestedAt, businessDays);
+  // 土日・祝日もそのまま1日として数える(スキップしない)。例えば金曜に質問が来た場合、
+  // 翌営業日の月曜まで待たず、土曜の朝9時以降に催促する。
+  const deadline = new Date(requestedAt);
+  deadline.setDate(deadline.getDate() + businessDays);
   // 催促は深夜などに送られないよう、最速でも(計算上の日付の)朝9時以降にする。
   // ただし、これは「9時より前には送らない」というブレーキでしかないため、実際に
   // 9時ぴったりに送らせるには、cron-job.org側のチェック間隔も短くする必要がある
