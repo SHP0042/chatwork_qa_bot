@@ -1499,10 +1499,9 @@ function buildChatPageHtml() {
       });
   }
 
+  // エンターキーでは送信しない(日本語入力の変換確定でエンターを押した際に
+  // 誤って送信されてしまうのを防ぐため)。送信は必ずボタンを押してもらう。
   sendButton.addEventListener('click', send);
-  input.addEventListener('keydown', function (e) {
-    if (e.key === 'Enter') send();
-  });
 
   if (!passwordRequired || getStoredPassword()) {
     showChat();
