@@ -2017,6 +2017,31 @@ app.post('/api/ask-login', express.json(), (req, res) => {
   return res.status(401).json({ ok: false, error: 'パスワードが違います' });
 });
 
+// Q&A表に答えが無かった分を保留シートに記録し、見落とし防止のため既存のChatwork
+// ルームに軽い通知を送る(新しいグループは作らず、返信も期待しない)。
+async function createSitePendingAndNotify(question) {
+  let pendingId = null;
+  try {
+    pendingId = await appendPendingRow({
+      question,
+      askerAccountId: '',
+      askerName: '接客担当(自社サイト)',
+      roomId: 'site-chat',
+      questionMessageId: '',
+      holderRequestMessageId: '',
+    });
+  } catch (e) {
+    console.error('保留シートへの記録に失敗しました:', e);
+  }
+  try {
+    const mentions = config.holderAccountIds.map((id) => mentionTag(id)).join(' ');
+    await sendMessage(`${mentions}\nサイト内に未回答の質問があります。`);
+  } catch (e) {
+    console.error('Chatworkへの通知送信に失敗しました:', e);
+  }
+  return pendingId;
+}
+
 app.post('/api/ask', express.json(), async (req, res) => {
   allowCors(req, res);
   if (!checkChatPassword(req)) {
@@ -2029,22 +2054,47 @@ app.post('/api/ask', express.json(), async (req, res) => {
     const { rows } = await readFaqTable();
     let result = exactMatchQuestion(question, rows);
 
-    if (!result.matched) {
-      try {
-        result = await matchQuestion(question, rows);
-        // 実際に表示する回答文は、Chatworkボットと同様に表の内容をそのまま使う。
-        if (result.matched && result.rowNumber) {
-          const matchedRow = rows.find((r) => r.rowNumber === result.rowNumber);
-          if (matchedRow) {
-            result.answer = matchedRow.answer;
-          } else {
-            result.matched = false;
-          }
+    if (result.matched && result.answer) {
+      return res.json({ answered: true, answer: result.answer });
+    }
+
+    // 1通の質問に複数の内容が混ざっている場合(「○○は?また、△△は?」等)、
+    // メッセージ全体では一致しなくても、改行や「？」で区切った候補ごとに判定し、
+    // 答えられる部分だけ拾って案内する(Chatworkボットと同じ考え方)。
+    const candidates = splitIntoCandidateQuestions(question);
+    if (candidates.length > 1) {
+      const { matched, unmatched } = await matchCandidatesForPartialAnswers(candidates, rows);
+      if (matched.length > 0) {
+        const answerBody = matched
+          .map((m) => `[info]\n【質問】${m.question}\n【回答】${m.answer}\n[/info]`)
+          .join('\n');
+        const leftover = formatLeftoverQuestions(unmatched).trim();
+        if (!leftover) {
+          return res.json({ answered: true, answer: answerBody });
         }
-      } catch (e) {
-        console.error('サイトチャットの質問判定でエラー:', e);
-        result = fallbackMatchQuestion(question, rows);
+        const pendingId = await createSitePendingAndNotify(leftover);
+        return res.json({
+          answered: false,
+          pendingId,
+          answer: `${answerBody}\n\nなお、上記以外のご質問につきましては、ただいま担当者に確認しております。少々お待ちください。`,
+        });
       }
+    }
+
+    try {
+      result = await matchQuestion(question, rows);
+      // 実際に表示する回答文は、Chatworkボットと同様に表の内容をそのまま使う。
+      if (result.matched && result.rowNumber) {
+        const matchedRow = rows.find((r) => r.rowNumber === result.rowNumber);
+        if (matchedRow) {
+          result.answer = matchedRow.answer;
+        } else {
+          result.matched = false;
+        }
+      }
+    } catch (e) {
+      console.error('サイトチャットの質問判定でエラー:', e);
+      result = fallbackMatchQuestion(question, rows);
     }
 
     if (result.matched && result.answer) {
@@ -2052,28 +2102,8 @@ app.post('/api/ask', express.json(), async (req, res) => {
     }
 
     // Q&A表に答えが無い場合は、保留シートに記録したうえで、プロモーター用の
-    // 回答管理ページ(/promoter)で回答してもらう。既存のチャットワークのグループを
-    // 増やさず、見落とし防止のため既存のルームに軽い通知だけ送る(返信は期待しない)。
-    let pendingId = null;
-    try {
-      pendingId = await appendPendingRow({
-        question,
-        askerAccountId: '',
-        askerName: '接客担当(自社サイト)',
-        roomId: 'site-chat',
-        questionMessageId: '',
-        holderRequestMessageId: '',
-      });
-    } catch (e) {
-      console.error('保留シートへの記録に失敗しました:', e);
-    }
-
-    try {
-      const mentions = config.holderAccountIds.map((id) => mentionTag(id)).join(' ');
-      await sendMessage(`${mentions}\nサイト内に未回答の質問があります。`);
-    } catch (e) {
-      console.error('Chatworkへの通知送信に失敗しました:', e);
-    }
+    // 回答管理ページ(/promoter)で回答してもらう。
+    const pendingId = await createSitePendingAndNotify(question);
 
     return res.json({
       answered: false,
