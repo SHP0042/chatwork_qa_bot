@@ -959,12 +959,24 @@ async function runFollowupCheck({ log = console.log } = {}) {
   const pending = await listPendingRows();
   let reminded = 0;
   for (const p of pending) {
-    // 自社サイトの質問チャット発の保留項目は、Chatworkのメッセージに紐づかないため、
-    // このChatwork向け催促処理の対象から除外する(プロモーター管理画面側で扱う)。
-    if (p.roomId === 'site-chat') continue;
     if (p.status !== 'pending') continue;
     if (p.reminded === 'yes') continue;
     if (!hasElapsedBusinessDays(p.requestedAt, config.followupAfterBusinessDays)) continue;
+
+    // 自社サイトの質問チャット発の保留項目は、Chatworkの特定メッセージには紐づかないため、
+    // (返信を待つのではなく)既存ルームへの軽い催促通知だけを送る。
+    if (p.roomId === 'site-chat') {
+      try {
+        const mentions = config.holderAccountIds.map((id) => mentionTag(id)).join(' ');
+        await sendMessage(`${mentions}\nサイト内に未回答の質問があります。`);
+        await updatePendingRow(p.sheetRowNumber, { reminded: 'yes' });
+        reminded++;
+        log(`サイトチャットの催促を送信しました: ${p.question}`);
+      } catch (e) {
+        console.error('サイトチャット分の催促送信に失敗しました:', e);
+      }
+      continue;
+    }
 
     const stillExists = await messageExists(p.questionMessageId, p.roomId || config.chatworkRoomId);
     if (!stillExists) {
@@ -1140,6 +1152,17 @@ function buildChatPageHtml() {
   }
   .bubble.bot { background: var(--panel); color: var(--text); border-bottom-left-radius: 4px; }
   .bubble.user { background: var(--user-bubble); color: #fff; border-bottom-right-radius: 4px; box-shadow: none; }
+  .bubble .info-box {
+    background: var(--bg);
+    border-left: 3px solid var(--brand);
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin: 8px 0;
+  }
+  .bubble .info-box:first-child { margin-top: 0; }
+  .bubble .info-box:last-child { margin-bottom: 0; }
+  .bubble .info-title { font-weight: 700; margin: 8px 0 4px; }
+  .bubble .info-title:first-child { margin-top: 0; }
   .typing {
     display: inline-flex;
     gap: 4px;
@@ -1233,6 +1256,21 @@ function buildChatPageHtml() {
 
   function qs(id) { return document.getElementById(id); }
 
+  // Q&A表の回答には、チャットワーク用の[info]...[/info]のような装飾タグが
+  // そのまま入っていることがある。このサイトのチャットではチャットワークの
+  // 記法を解釈できないため、見やすい形(枠で囲む等)に変換してから表示する。
+  function formatAnswerHtml(text) {
+    var div = document.createElement('div');
+    div.textContent = text == null ? '' : String(text);
+    var escaped = div.innerHTML;
+    escaped = escaped.replace(/\[info\]([\s\S]*?)\[\/info\]/gi, '<div class="info-box">$1</div>');
+    escaped = escaped.replace(/\[title\]([\s\S]*?)\[\/title\]/gi, '<div class="info-title">$1</div>');
+    // 上記以外の、チャットワーク独自タグ([qt]や[hr]、[piconname:xxx]など)が
+    // 残っていたら、タグ自体だけを取り除いて中身のテキストは残す。
+    escaped = escaped.replace(/\[\/?[a-zA-Z][a-zA-Z0-9_:=]*\]/g, '');
+    return escaped;
+  }
+
   function getStoredPassword() {
     try { return window.sessionStorage.getItem(STORAGE_KEY) || ''; } catch (e) { return ''; }
   }
@@ -1315,7 +1353,11 @@ function buildChatPageHtml() {
         row.className = 'bubble-row ' + m.who;
         var bubble = document.createElement('div');
         bubble.className = 'bubble ' + m.who;
-        bubble.textContent = m.text;
+        if (m.who === 'bot') {
+          bubble.innerHTML = formatAnswerHtml(m.text);
+        } else {
+          bubble.textContent = m.text;
+        }
         row.appendChild(bubble);
         body.appendChild(row);
       });
@@ -1392,7 +1434,11 @@ function buildChatPageHtml() {
     row.className = 'bubble-row ' + who;
     var bubble = document.createElement('div');
     bubble.className = 'bubble ' + who;
-    bubble.textContent = text;
+    if (who === 'bot') {
+      bubble.innerHTML = formatAnswerHtml(text);
+    } else {
+      bubble.textContent = text;
+    }
     row.appendChild(bubble);
     chatBody.appendChild(row);
     chatBody.scrollTop = chatBody.scrollHeight;
@@ -2024,10 +2070,7 @@ app.post('/api/ask', express.json(), async (req, res) => {
 
     try {
       const mentions = config.holderAccountIds.map((id) => mentionTag(id)).join(' ');
-      await sendMessage(
-        `${mentions}\n自社サイトの自動回答チャットに未回答の質問が届きました。\n` +
-          `プロモーター用の回答管理ページからご確認・ご回答をお願いします。\n\n【質問】${question}`
-      );
+      await sendMessage(`${mentions}\nサイト内に未回答の質問があります。`);
     } catch (e) {
       console.error('Chatworkへの通知送信に失敗しました:', e);
     }
