@@ -956,6 +956,13 @@ async function handleHolderReply({ replyTarget, body, senderId, roomId, messageI
 }
 
 async function runFollowupCheck({ log = console.log } = {}) {
+  // 土日・祝日はChatworkへの催促通知を送らない。cron-job.org等から呼ばれても
+  // その日は何もせずに終わる(翌営業日のチェックで改めて対象になる)。
+  if (!isBusinessDay(new Date())) {
+    log('土日・祝日のため、催促チェックをスキップしました。');
+    return { reminded: 0, checked: 0, skipped: 'not-business-day' };
+  }
+
   const pending = await listPendingRows();
   let reminded = 0;
   for (const p of pending) {
@@ -2033,11 +2040,15 @@ async function createSitePendingAndNotify(question) {
   } catch (e) {
     console.error('保留シートへの記録に失敗しました:', e);
   }
-  try {
-    const mentions = config.holderAccountIds.map((id) => mentionTag(id)).join(' ');
-    await sendMessage(`${mentions}\nサイト内に未回答の質問があります。`);
-  } catch (e) {
-    console.error('Chatworkへの通知送信に失敗しました:', e);
+  // 土日・祝日はChatworkへの通知を送らない(保留シートへの記録は行うので、
+  // 平常営業日になれば次の催促チェックで通知される)。
+  if (isBusinessDay(new Date())) {
+    try {
+      const mentions = config.holderAccountIds.map((id) => mentionTag(id)).join(' ');
+      await sendMessage(`${mentions}\nサイト内に未回答の質問があります。`);
+    } catch (e) {
+      console.error('Chatworkへの通知送信に失敗しました:', e);
+    }
   }
   return pendingId;
 }
