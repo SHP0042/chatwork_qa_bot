@@ -1093,6 +1093,19 @@ function buildChatPageHtml() {
   }
   .gate-error { color: #d1403a; font-size: 12.5px; margin-top: 10px; min-height: 16px; }
 
+  .role-btn {
+    width: 100%;
+    padding: 13px 14px;
+    border-radius: 10px;
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .role-btn + .role-btn { margin-top: 10px; }
+  .gate-card .role-btn-primary { background: var(--brand); color: #fff; border: none; }
+  .gate-card .role-btn-secondary { background: #fff; color: var(--brand); border: 1.5px solid var(--brand); }
+
   .chat-wrap { flex: 1; display: flex; justify-content: center; overflow: hidden; padding: 0 16px; }
   .chat-column { width: 100%; max-width: 640px; display: flex; flex-direction: column; min-height: 0; }
   .chat-body { flex: 1; overflow-y: auto; padding: 22px 4px 16px; display: flex; flex-direction: column; gap: 16px; }
@@ -1173,6 +1186,14 @@ function buildChatPageHtml() {
         <div class="title">SHP 自動回答チャット</div>
         <div class="subtitle">接客担当専用 ご質問受付</div>
       </div>
+    </div>
+  </div>
+
+  <div id="roleSelect" class="gate-wrap" style="display:none;">
+    <div class="gate-card">
+      <h2>どちらでログインしますか？</h2>
+      <button class="role-btn role-btn-primary" id="roleAskerBtn">接客担当としてログイン</button>
+      <button class="role-btn role-btn-secondary" id="rolePromoterBtn">プロモーターとしてログイン</button>
     </div>
   </div>
 
@@ -1260,6 +1281,9 @@ function buildChatPageHtml() {
     }
   }
 
+  var roleSelectWrap = qs('roleSelect');
+  var roleAskerBtn = qs('roleAskerBtn');
+  var rolePromoterBtn = qs('rolePromoterBtn');
   var gateWrap = qs('gate');
   var chatWrap = qs('chatWrap');
   var gateSubmit = qs('gate-submit');
@@ -1300,14 +1324,23 @@ function buildChatPageHtml() {
     }
   }
 
+  function showRoleSelect() {
+    clearStoredPassword();
+    roleSelectWrap.style.display = 'flex';
+    gateWrap.style.display = 'none';
+    chatWrap.style.display = 'none';
+  }
+
   function showGate(message) {
     clearStoredPassword();
+    roleSelectWrap.style.display = 'none';
     gateWrap.style.display = 'flex';
     chatWrap.style.display = 'none';
     gateError.textContent = message || '';
   }
 
   function showChat() {
+    roleSelectWrap.style.display = 'none';
     gateWrap.style.display = 'none';
     chatWrap.style.display = 'flex';
     if (!historyRendered) {
@@ -1345,6 +1378,13 @@ function buildChatPageHtml() {
     gatePassword.addEventListener('keydown', function (e) {
       if (e.key === 'Enter') submitPassword();
     });
+  }
+
+  if (roleAskerBtn) {
+    roleAskerBtn.addEventListener('click', function () { showGate(); });
+  }
+  if (rolePromoterBtn) {
+    rolePromoterBtn.addEventListener('click', function () { window.location.href = '/promoter'; });
   }
 
   function addBubble(text, who, record) {
@@ -1467,7 +1507,7 @@ function buildChatPageHtml() {
   if (!passwordRequired || getStoredPassword()) {
     showChat();
   } else {
-    showGate();
+    showRoleSelect();
   }
 
   // ページを開いている間、保留中の質問がないか定期的に確認する。
@@ -1554,6 +1594,8 @@ function buildPromoterAdminHtml() {
     cursor: pointer;
   }
   .gate-error { color: #d1403a; font-size: 12.5px; margin-top: 10px; min-height: 16px; }
+  .gate-switch { margin-top: 14px; font-size: 12px; }
+  .gate-switch a { color: var(--brand); text-decoration: none; font-weight: 600; }
 
   .admin-wrap { flex: 1; display: none; justify-content: center; padding: 20px 16px 40px; }
   .admin-column { width: 100%; max-width: 680px; }
@@ -1635,6 +1677,7 @@ function buildPromoterAdminHtml() {
       <input type="password" id="gate-password" placeholder="パスワード" />
       <button id="gate-submit">開く</button>
       <div class="gate-error" id="gate-error"></div>
+      <div class="gate-switch"><a href="/chat">接客担当の方はこちら</a></div>
     </div>
   </div>
 
