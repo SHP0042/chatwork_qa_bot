@@ -55,6 +55,10 @@ const config = {
 
   // Bot behaviour
   teachTriggerWord: process.env.TEACH_TRIGGER_WORD || '覚えて',
+
+  // 自社サイト用の自動回答チャットページ(プロモーター向け)の共通パスワード。
+  // 未設定の場合は誰でもページを開ける状態になる。
+  chatPagePassword: process.env.CHAT_PAGE_PASSWORD || '',
 };
 
 function assertConfig() {
@@ -977,6 +981,337 @@ async function runFollowupCheck({ log = console.log } = {}) {
 }
 
 // ============================================================
+// promoter chat page（自社サイト用・SHP案件専用の自動回答チャット）
+// ============================================================
+// ChatworkのBotとは別に、プロモーター向けにQ&A表を使った自動回答チャットの
+// 専用ページを用意する。ページ自体は単純な共通パスワードで保護し、
+// Q&A表に答えが無い質問はChatworkのホルダーにも通知してQ&A表の「保留」シートに
+// 記録する（この質問者本人へは直接返信できないため、通常の窓口への連絡を案内する）。
+// 自社サイト(official-shp.com/qa_bot)には、このページを<iframe>で埋め込んで使う想定。
+// 埋め込み元のドメインが別になるため、Cookieではなく「パスワードをブラウザのsessionStorageに
+// 保存し、質問のたびにヘッダーで送って毎回サーバー側が照合する」方式にしている
+// （Cookie方式だと、他ドメインに埋め込んだ際にブラウザの第三者Cookieブロックで
+// 正しく動かないことがあるため）。
+const CHAT_PASSWORD_HEADER = 'x-chat-password';
+
+function checkChatPassword(req) {
+  // パスワードが設定されていない場合は、誰でも使える状態にしておく
+  // （設定し忘れでページが一切使えなくなる事故を避けるため）。
+  if (!config.chatPagePassword) return true;
+  const provided = req.headers[CHAT_PASSWORD_HEADER] || (req.body && req.body.password) || '';
+  return provided === config.chatPagePassword;
+}
+
+function buildChatPageHtml() {
+  return `<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SHP 自動回答チャット</title>
+<style>
+  :root {
+    --brand: #4f6df5;
+    --brand-dark: #3a53d1;
+    --bg: #f4f6fb;
+    --panel: #ffffff;
+    --text: #222733;
+    --muted: #767d8c;
+    --user-bubble: #4f6df5;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    height: 100%;
+    font-family: "Hiragino Sans", "Hiragino Kaku Gothic ProN", "游ゴシック", "Yu Gothic", "Meiryo", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+  }
+  .app { display: flex; flex-direction: column; height: 100vh; }
+  .top-bar {
+    background: linear-gradient(135deg, var(--brand), var(--brand-dark));
+    color: #fff;
+    padding: 18px 24px;
+    text-align: center;
+  }
+  .top-bar .title { font-size: 17px; font-weight: 700; }
+  .top-bar .subtitle { font-size: 12.5px; opacity: 0.85; margin-top: 4px; }
+
+  .gate-wrap { flex: 1; display: flex; align-items: center; justify-content: center; padding: 24px; }
+  .gate-card {
+    background: #fff;
+    border-radius: 16px;
+    box-shadow: 0 16px 48px rgba(20,24,40,0.12);
+    padding: 32px 28px;
+    width: 100%;
+    max-width: 360px;
+    text-align: center;
+  }
+  .gate-card h2 { font-size: 16px; margin: 0 0 18px; }
+  .gate-card input {
+    width: 100%;
+    padding: 11px 14px;
+    border: 1px solid #dfe2ec;
+    border-radius: 10px;
+    font-size: 14px;
+    margin-bottom: 12px;
+    font-family: inherit;
+  }
+  .gate-card button {
+    width: 100%;
+    padding: 11px 14px;
+    border: none;
+    border-radius: 10px;
+    background: var(--brand);
+    color: #fff;
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .gate-error { color: #d1403a; font-size: 12.5px; margin-top: 10px; min-height: 16px; }
+
+  .chat-wrap { flex: 1; display: flex; justify-content: center; overflow: hidden; padding: 0 16px; }
+  .chat-column { width: 100%; max-width: 640px; display: flex; flex-direction: column; min-height: 0; }
+  .chat-body { flex: 1; overflow-y: auto; padding: 22px 4px 16px; display: flex; flex-direction: column; gap: 16px; }
+  .bubble-row { display: flex; }
+  .bubble-row.bot { justify-content: flex-start; }
+  .bubble-row.user { justify-content: flex-end; }
+  .bubble {
+    max-width: 78%;
+    padding: 12px 16px;
+    border-radius: 16px;
+    font-size: 14px;
+    line-height: 1.7;
+    white-space: pre-wrap;
+    box-shadow: 0 1px 2px rgba(20,24,40,0.04);
+  }
+  .bubble.bot { background: var(--panel); color: var(--text); border-bottom-left-radius: 4px; }
+  .bubble.user { background: var(--user-bubble); color: #fff; border-bottom-right-radius: 4px; box-shadow: none; }
+  .typing {
+    display: inline-flex;
+    gap: 4px;
+    padding: 13px 16px;
+    background: var(--panel);
+    border-radius: 16px;
+    border-bottom-left-radius: 4px;
+    width: fit-content;
+    box-shadow: 0 1px 2px rgba(20,24,40,0.04);
+  }
+  .typing span { width: 6px; height: 6px; border-radius: 50%; background: #a7adbd; animation: blink 1.2s infinite; }
+  .typing span:nth-child(2) { animation-delay: 0.2s; }
+  .typing span:nth-child(3) { animation-delay: 0.4s; }
+  @keyframes blink { 0%, 80%, 100% { opacity: 0.3; } 40% { opacity: 1; } }
+
+  .input-bar { padding: 14px 4px 22px; }
+  .input-inner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: #fff;
+    border: 1px solid #dfe2ec;
+    border-radius: 24px;
+    padding: 6px 6px 6px 18px;
+    box-shadow: 0 6px 18px rgba(20,24,40,0.06);
+  }
+  .input-inner input { flex: 1; border: none; outline: none; font-size: 14px; font-family: inherit; padding: 8px 0; background: transparent; }
+  .input-inner button {
+    width: 40px; height: 40px; border-radius: 50%; border: none;
+    background: var(--brand); color: #fff; cursor: pointer;
+    display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+  }
+  .input-inner button:disabled { opacity: 0.5; cursor: default; }
+  .input-inner button svg { width: 17px; height: 17px; fill: #fff; }
+  .input-hint { text-align: center; font-size: 11px; color: #b7bcc9; margin-top: 8px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="top-bar">
+    <div class="title">SHP 自動回答チャット</div>
+    <div class="subtitle">プロモーター専用 ご質問受付</div>
+  </div>
+
+  <div id="gate" class="gate-wrap" style="display:none;">
+    <div class="gate-card">
+      <h2>パスワードを入力してください</h2>
+      <input type="password" id="gate-password" placeholder="パスワード" />
+      <button id="gate-submit">開く</button>
+      <div class="gate-error" id="gate-error"></div>
+    </div>
+  </div>
+
+  <div id="chatWrap" class="chat-wrap" style="display:none;">
+    <div class="chat-column">
+      <div class="chat-body" id="chatBody"></div>
+      <div class="input-bar">
+        <div class="input-inner">
+          <input type="text" id="questionInput" placeholder="質問を入力してください" />
+          <button id="sendButton">
+            <svg viewBox="0 0 24 24"><path d="M2 21l21-9L2 3v7l15 2-15 2z"/></svg>
+          </button>
+        </div>
+        <div class="input-hint">自動回答です。内容が異なる場合は担当者までご確認ください。</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var STORAGE_KEY = 'shpChatPassword';
+  var passwordRequired = ${config.chatPagePassword ? 'true' : 'false'};
+
+  function qs(id) { return document.getElementById(id); }
+
+  function getStoredPassword() {
+    try { return window.sessionStorage.getItem(STORAGE_KEY) || ''; } catch (e) { return ''; }
+  }
+  function setStoredPassword(pw) {
+    try { window.sessionStorage.setItem(STORAGE_KEY, pw); } catch (e) { /* 無視 */ }
+  }
+  function clearStoredPassword() {
+    try { window.sessionStorage.removeItem(STORAGE_KEY); } catch (e) { /* 無視 */ }
+  }
+
+  var gateWrap = qs('gate');
+  var chatWrap = qs('chatWrap');
+  var gateSubmit = qs('gate-submit');
+  var gatePassword = qs('gate-password');
+  var gateError = qs('gate-error');
+  var chatBody = qs('chatBody');
+  var input = qs('questionInput');
+  var sendButton = qs('sendButton');
+
+  function showGate(message) {
+    clearStoredPassword();
+    gateWrap.style.display = 'flex';
+    chatWrap.style.display = 'none';
+    gateError.textContent = message || '';
+  }
+
+  function showChat() {
+    gateWrap.style.display = 'none';
+    chatWrap.style.display = 'flex';
+    if (!chatBody.childNodes.length) {
+      addBubble('こんにちは。SHPに関するご質問を入力してください。', 'bot');
+    }
+    input.focus();
+  }
+
+  function submitPassword() {
+    var pw = gatePassword.value;
+    gateError.textContent = '';
+    fetch('/api/promoter-login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: pw })
+    })
+      .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
+      .then(function (result) {
+        if (result.ok && result.data && result.data.ok) {
+          setStoredPassword(pw);
+          showChat();
+        } else {
+          gateError.textContent = 'パスワードが違います。';
+        }
+      })
+      .catch(function () {
+        gateError.textContent = '通信エラーが発生しました。もう一度お試しください。';
+      });
+  }
+
+  if (gateSubmit) {
+    gateSubmit.addEventListener('click', submitPassword);
+    gatePassword.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') submitPassword();
+    });
+  }
+
+  function addBubble(text, who) {
+    var row = document.createElement('div');
+    row.className = 'bubble-row ' + who;
+    var bubble = document.createElement('div');
+    bubble.className = 'bubble ' + who;
+    bubble.textContent = text;
+    row.appendChild(bubble);
+    chatBody.appendChild(row);
+    chatBody.scrollTop = chatBody.scrollHeight;
+    return bubble;
+  }
+
+  function addTyping() {
+    var row = document.createElement('div');
+    row.className = 'bubble-row bot';
+    row.id = 'typingRow';
+    var typing = document.createElement('div');
+    typing.className = 'typing';
+    typing.innerHTML = '<span></span><span></span><span></span>';
+    row.appendChild(typing);
+    chatBody.appendChild(row);
+    chatBody.scrollTop = chatBody.scrollHeight;
+  }
+
+  function removeTyping() {
+    var row = qs('typingRow');
+    if (row) row.remove();
+  }
+
+  function send() {
+    var question = input.value.trim();
+    if (!question) return;
+    addBubble(question, 'user');
+    input.value = '';
+    sendButton.disabled = true;
+    addTyping();
+
+    fetch('/api/promoter-ask', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-chat-password': getStoredPassword() },
+      body: JSON.stringify({ question: question })
+    })
+      .then(function (res) {
+        if (res.status === 401) {
+          removeTyping();
+          showGate('パスワードが違うようです。もう一度入力してください。');
+          return null;
+        }
+        return res.json();
+      })
+      .then(function (data) {
+        if (!data) return;
+        removeTyping();
+        var text = (data && data.answer)
+          ? data.answer
+          : '只今エラーが発生しました。お手数ですが、時間をおいて再度お試しください。';
+        addBubble(text, 'bot');
+      })
+      .catch(function () {
+        removeTyping();
+        addBubble('通信エラーが発生しました。お手数ですが、時間をおいて再度お試しください。', 'bot');
+      })
+      .finally(function () {
+        sendButton.disabled = false;
+        input.focus();
+      });
+  }
+
+  sendButton.addEventListener('click', send);
+  input.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') send();
+  });
+
+  if (!passwordRequired || getStoredPassword()) {
+    showChat();
+  } else {
+    showGate();
+  }
+})();
+</script>
+</body>
+</html>`;
+}
+
+// ============================================================
 // server
 // ============================================================
 assertConfig();
@@ -1012,6 +1347,87 @@ app.get('/cron/followup', async (req, res) => {
   } catch (e) {
     console.error(e);
     res.status(500).json({ ok: false, error: String(e.message || e) });
+  }
+});
+
+// ---- プロモーター向け自動回答チャットページ（SHP案件専用） ----
+app.get('/chat', (req, res) => {
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(buildChatPageHtml());
+});
+
+// official-shp.com側に置く独立したHTML(iframeを使わないバージョン)から、
+// ドメインをまたいでこのAPIを直接呼べるようにするためのCORS設定。
+// パスワードはCookieではなくヘッダーで毎回渡す方式なので、認証情報(credentials)は
+// やり取りせず、Originは広めに許可しても安全（実際の防御はパスワード自体で行う）。
+function allowCors(req, res) {
+  res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-chat-password');
+}
+
+app.options('/api/promoter-login', (req, res) => {
+  allowCors(req, res);
+  res.sendStatus(204);
+});
+app.options('/api/promoter-ask', (req, res) => {
+  allowCors(req, res);
+  res.sendStatus(204);
+});
+
+app.post('/api/promoter-login', express.json(), (req, res) => {
+  allowCors(req, res);
+  const password = (req.body && req.body.password) || '';
+  if (!config.chatPagePassword || password === config.chatPagePassword) {
+    return res.json({ ok: true });
+  }
+  return res.status(401).json({ ok: false, error: 'パスワードが違います' });
+});
+
+app.post('/api/promoter-ask', express.json(), async (req, res) => {
+  allowCors(req, res);
+  if (!checkChatPassword(req)) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  try {
+    const question = ((req.body && req.body.question) || '').trim();
+    if (!question) return res.status(400).json({ error: 'question is required' });
+
+    const { rows } = await readFaqTable();
+    let result = exactMatchQuestion(question, rows);
+
+    if (!result.matched) {
+      try {
+        result = await matchQuestion(question, rows);
+        // 実際に表示する回答文は、Chatworkボットと同様に表の内容をそのまま使う。
+        if (result.matched && result.rowNumber) {
+          const matchedRow = rows.find((r) => r.rowNumber === result.rowNumber);
+          if (matchedRow) {
+            result.answer = matchedRow.answer;
+          } else {
+            result.matched = false;
+          }
+        }
+      } catch (e) {
+        console.error('サイトチャットの質問判定でエラー:', e);
+        result = fallbackMatchQuestion(question, rows);
+      }
+    }
+
+    if (result.matched && result.answer) {
+      return res.json({ answered: true, answer: result.answer });
+    }
+
+    // Q&A表に答えが無い場合は、シートへの書き込みやChatworkへの通知は一切行わず、
+    // このチャットは常にQ&A表を「見るだけ」にする。定型の案内文を返すのみ。
+    return res.json({
+      answered: false,
+      answer:
+        '申し訳ございません。この内容については担当者の確認が必要です。\n\n恐れ入りますが、いつもの窓口からご連絡ください。',
+    });
+  } catch (e) {
+    console.error('/api/promoter-ask エラー:', e);
+    res.status(500).json({ error: 'internal error' });
   }
 });
 
@@ -1118,6 +1534,13 @@ app.get('/debug-sheets', async (req, res) => {
 });
 
 app.get('/', (req, res) => {
+  // qa-bot.official-shp.com のようにチャット専用のサブドメインでアクセスされた場合は、
+  // トップページ("/")でそのままチャット画面を表示する(「/chat」を付けなくて済むように)。
+  const host = (req.hostname || '').toLowerCase();
+  if (host.startsWith('qa-bot.')) {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    return res.send(buildChatPageHtml());
+  }
   res.send('Chatwork Q&A Bot is running.');
 });
 
