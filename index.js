@@ -1701,6 +1701,16 @@ function buildChatPageHtml() {
           deleteRoomPending(r);
         });
         row.appendChild(cancelBtn);
+      } else if (r.status !== 'sending') {
+        var deleteBtn = document.createElement('button');
+        deleteBtn.type = 'button';
+        deleteBtn.className = 'room-cancel';
+        deleteBtn.textContent = '削除';
+        deleteBtn.addEventListener('click', function (e) {
+          e.stopPropagation();
+          deleteRoomLocal(r);
+        });
+        row.appendChild(deleteBtn);
       }
 
       roomListEl.appendChild(row);
@@ -1976,6 +1986,23 @@ function buildChatPageHtml() {
       .catch(function () {
         showToast('通信エラーのため取り消せませんでした。少し時間をおいて、もう一度お試しください。');
       });
+  }
+
+  // 回答済み・取消済みなど、もう動きのない過去の質問を一覧から消す。
+  // サーバー側には何もしない(表示用の履歴をこの端末から消すだけ)ので、
+  // 確認中の質問はここでは扱わない(その場合は上の「取消」を使う)。
+  function deleteRoomLocal(room) {
+    if (!window.confirm('この質問を一覧から削除しますか？(この操作は取り消せません)')) return;
+    var idx = rooms.findIndex(function (r) { return r.id === room.id; });
+    if (idx === -1) return;
+    rooms.splice(idx, 1);
+    saveRooms(rooms);
+    if (activeRoomId === room.id) {
+      activeRoomId = null;
+      renderRoomDetail(null);
+    }
+    renderRoomList();
+    showToast('質問を削除しました。');
   }
 
   function send() {
