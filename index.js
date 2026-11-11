@@ -1438,6 +1438,34 @@ function buildChatPageHtml() {
   .input-inner button:disabled { opacity: 0.5; cursor: default; }
   .input-inner button svg { width: 17px; height: 17px; fill: #fff; }
   .input-hint { text-align: center; font-size: 11px; color: #b7bcc9; margin-top: 8px; }
+
+  /* ボタン共通の「水っぽい」質感と、押したときに水がはじけるような演出 */
+  button { position: relative; overflow: hidden; isolation: isolate; }
+  button::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: linear-gradient(165deg, rgba(255,255,255,0.65) 0%, rgba(255,255,255,0.14) 38%, rgba(255,255,255,0) 55%, rgba(255,255,255,0.2) 100%);
+    mix-blend-mode: overlay;
+    pointer-events: none;
+    transition: opacity 0.15s ease;
+  }
+  button:active::before { opacity: 0.55; }
+  button:active { transform: scale(0.96) !important; }
+  .btn-splash {
+    position: absolute;
+    border-radius: 50%;
+    pointer-events: none;
+    background: radial-gradient(circle, rgba(255,255,255,0.95) 0%, rgba(173,224,255,0.65) 32%, rgba(120,200,255,0.32) 55%, rgba(120,200,255,0) 72%);
+    transform: scale(0);
+    animation: btnSplash 0.6s cubic-bezier(.22,.7,.32,1) forwards;
+  }
+  @keyframes btnSplash {
+    0% { transform: scale(0); opacity: 0.95; }
+    55% { opacity: 0.55; }
+    100% { transform: scale(1.05); opacity: 0; }
+  }
 </style>
 </head>
 <body>
@@ -1505,6 +1533,27 @@ function buildChatPageHtml() {
 
 <script>
 (function () {
+  // ボタンを押したときに、水がはじけるようなエフェクトを出す(全ボタン共通)
+  (function attachButtonSplash() {
+    document.addEventListener('pointerdown', function (e) {
+      var btn = e.target && e.target.closest ? e.target.closest('button') : null;
+      if (!btn || btn.disabled) return;
+      var rect = btn.getBoundingClientRect();
+      var size = Math.max(rect.width, rect.height) * 1.6;
+      var x = (typeof e.clientX === 'number' && e.clientX) ? e.clientX - rect.left : rect.width / 2;
+      var y = (typeof e.clientY === 'number' && e.clientY) ? e.clientY - rect.top : rect.height / 2;
+      var splash = document.createElement('span');
+      splash.className = 'btn-splash';
+      splash.style.width = splash.style.height = size + 'px';
+      splash.style.left = (x - size / 2) + 'px';
+      splash.style.top = (y - size / 2) + 'px';
+      btn.appendChild(splash);
+      window.setTimeout(function () {
+        if (splash.parentNode) splash.parentNode.removeChild(splash);
+      }, 650);
+    }, true);
+  })();
+
   var STORAGE_KEY = 'shpChatPassword';
   var READ_IDS_KEY = 'shpChatReadIds';
   var POLL_INTERVAL_MS = 20000;
@@ -2173,17 +2222,33 @@ function buildPromoterAdminHtml() {
   .top-bar {
     background: linear-gradient(135deg, var(--brand), var(--brand-dark));
     color: #fff;
-    padding: 18px 24px;
+    padding: 22px 24px;
     text-align: center;
     box-shadow: 0 4px 20px rgba(0,40,80,0.18);
     position: relative;
     z-index: 1;
+    overflow: hidden;
   }
-  .top-bar .title { font-size: 17px; font-weight: 700; }
-  .top-bar .subtitle-row { display: flex; align-items: center; justify-content: center; gap: 6px; margin-top: 4px; }
-  .top-bar .subtitle { font-size: 12.5px; opacity: 0.85; }
-  .top-bar-inner { display: flex; align-items: center; justify-content: center; gap: 12px; }
-  .brand-logo { width: 48px; height: 48px; border-radius: 50%; flex-shrink: 0; box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
+  .top-bar::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(ellipse 280px 90px at 50% -25%, rgba(255,255,255,0.28), rgba(255,255,255,0) 70%);
+    pointer-events: none;
+  }
+  .top-bar .title { font-size: 21px; font-weight: 800; letter-spacing: 0.3px; text-shadow: 0 1px 4px rgba(0,30,60,0.28); }
+  .top-bar .subtitle-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    margin-top: 8px;
+    background: rgba(255,255,255,0.16);
+    border-radius: 999px;
+    padding: 5px 13px;
+  }
+  .top-bar .subtitle { font-size: 12.5px; opacity: 0.95; font-weight: 600; }
+  .top-bar-inner { display: flex; align-items: center; justify-content: center; gap: 16px; position: relative; z-index: 1; }
+  .brand-logo { width: 68px; height: 68px; border-radius: 50%; flex-shrink: 0; border: 3px solid rgba(255,255,255,0.85); box-shadow: 0 4px 14px rgba(0,0,0,0.25); }
   .status-dot {
     width: 7px;
     height: 7px;
@@ -2324,6 +2389,34 @@ function buildPromoterAdminHtml() {
   .q-card button.delete-btn:disabled { opacity: 0.5; cursor: default; }
   .q-card .q-sent-note { font-size: 12px; color: #2a9d5c; margin-top: 4px; text-align: right; }
   .q-card .q-error-note { font-size: 12px; color: #d1403a; margin-top: 4px; text-align: right; }
+
+  /* ボタン共通の「水っぽい」質感と、押したときに水がはじけるような演出 */
+  button { position: relative; overflow: hidden; isolation: isolate; }
+  button::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: linear-gradient(165deg, rgba(255,255,255,0.65) 0%, rgba(255,255,255,0.14) 38%, rgba(255,255,255,0) 55%, rgba(255,255,255,0.2) 100%);
+    mix-blend-mode: overlay;
+    pointer-events: none;
+    transition: opacity 0.15s ease;
+  }
+  button:active::before { opacity: 0.55; }
+  button:active { transform: scale(0.96) !important; }
+  .btn-splash {
+    position: absolute;
+    border-radius: 50%;
+    pointer-events: none;
+    background: radial-gradient(circle, rgba(255,255,255,0.95) 0%, rgba(173,224,255,0.65) 32%, rgba(120,200,255,0.32) 55%, rgba(120,200,255,0) 72%);
+    transform: scale(0);
+    animation: btnSplash 0.6s cubic-bezier(.22,.7,.32,1) forwards;
+  }
+  @keyframes btnSplash {
+    0% { transform: scale(0); opacity: 0.95; }
+    55% { opacity: 0.55; }
+    100% { transform: scale(1.05); opacity: 0; }
+  }
 </style>
 </head>
 <body>
@@ -2361,6 +2454,27 @@ function buildPromoterAdminHtml() {
 
 <script>
 (function () {
+  // ボタンを押したときに、水がはじけるようなエフェクトを出す(全ボタン共通)
+  (function attachButtonSplash() {
+    document.addEventListener('pointerdown', function (e) {
+      var btn = e.target && e.target.closest ? e.target.closest('button') : null;
+      if (!btn || btn.disabled) return;
+      var rect = btn.getBoundingClientRect();
+      var size = Math.max(rect.width, rect.height) * 1.6;
+      var x = (typeof e.clientX === 'number' && e.clientX) ? e.clientX - rect.left : rect.width / 2;
+      var y = (typeof e.clientY === 'number' && e.clientY) ? e.clientY - rect.top : rect.height / 2;
+      var splash = document.createElement('span');
+      splash.className = 'btn-splash';
+      splash.style.width = splash.style.height = size + 'px';
+      splash.style.left = (x - size / 2) + 'px';
+      splash.style.top = (y - size / 2) + 'px';
+      btn.appendChild(splash);
+      window.setTimeout(function () {
+        if (splash.parentNode) splash.parentNode.removeChild(splash);
+      }, 650);
+    }, true);
+  })();
+
   var STORAGE_KEY = 'shpPromoterPassword';
   var REFRESH_INTERVAL_MS = 20000;
   var passwordRequired = ${config.promoterPagePassword ? 'true' : 'false'};
