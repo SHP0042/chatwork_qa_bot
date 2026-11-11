@@ -1144,9 +1144,10 @@ function buildChatPageHtml() {
   .gate-card .role-btn-secondary { background: #fff; color: var(--brand); border: 1.5px solid var(--brand); }
 
   .chat-wrap { flex: 1; display: flex; justify-content: center; overflow: hidden; padding: 20px 16px; min-height: 0; }
-  .chat-column {
-    width: 100%;
-    max-width: 640px;
+  .chat-shell { width: 100%; max-width: 920px; display: flex; gap: 14px; min-height: 0; }
+  .room-list-panel {
+    width: 260px;
+    flex-shrink: 0;
     display: flex;
     flex-direction: column;
     min-height: 0;
@@ -1155,6 +1156,113 @@ function buildChatPageHtml() {
     box-shadow: 0 24px 60px rgba(10,30,60,0.12), 0 2px 10px rgba(10,30,60,0.05);
     border: 1px solid rgba(10,30,60,0.05);
     overflow: hidden;
+  }
+  .room-list-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 14px 14px 10px;
+    border-bottom: 1px solid #eef1f6;
+  }
+  .room-list-head h3 { margin: 0; font-size: 13.5px; color: var(--text); }
+  .new-room-btn {
+    border: none;
+    background: var(--brand);
+    color: #fff;
+    font-size: 11.5px;
+    font-weight: 700;
+    border-radius: 8px;
+    padding: 6px 10px;
+    cursor: pointer;
+    font-family: inherit;
+    transition: transform 0.1s ease;
+    flex-shrink: 0;
+  }
+  .new-room-btn:hover { transform: scale(1.05); }
+  .room-list { flex: 1; overflow-y: auto; padding: 6px; }
+  .room-list::-webkit-scrollbar { width: 6px; }
+  .room-list::-webkit-scrollbar-track { background: transparent; }
+  .room-list::-webkit-scrollbar-thumb { background: #d8dfeb; border-radius: 10px; }
+  .room-empty { padding: 24px 14px; text-align: center; color: var(--muted); font-size: 12.5px; }
+  .room-row {
+    position: relative;
+    padding: 10px 10px;
+    border-radius: 12px;
+    cursor: pointer;
+    margin-bottom: 2px;
+    transition: background 0.12s ease;
+  }
+  .room-row:hover { background: #f5f8fd; }
+  .room-row.active { background: #eaf3fc; }
+  .room-row .room-q {
+    font-size: 13px;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    padding-right: 46px;
+  }
+  .room-row.unread .room-q { font-weight: 700; }
+  .room-row .room-meta { display: flex; align-items: center; gap: 6px; margin-top: 5px; font-size: 10.5px; color: var(--muted); }
+  .room-unread-dot { width: 7px; height: 7px; border-radius: 50%; background: #3ddc84; flex-shrink: 0; }
+  .room-badge { display: inline-flex; align-items: center; gap: 3px; font-size: 10.5px; padding: 2px 7px; border-radius: 20px; font-weight: 700; flex-shrink: 0; }
+  .room-badge.pending { background: #fff2d6; color: #8a6d1f; }
+  .room-badge.answered { background: #e4f6ea; color: #1f8a4c; }
+  .room-badge.cancelled { background: #f1f1f3; color: #8a8f99; }
+  .room-row .room-cancel {
+    position: absolute;
+    top: 10px;
+    right: 8px;
+    border: 1px solid #e3c6c6;
+    background: #fff;
+    color: #c1443d;
+    font-size: 10px;
+    border-radius: 7px;
+    padding: 3px 7px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .room-row .room-cancel:hover { background: #fdf2f2; }
+
+  .chat-column {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    background: var(--panel);
+    border-radius: 22px;
+    box-shadow: 0 24px 60px rgba(10,30,60,0.12), 0 2px 10px rgba(10,30,60,0.05);
+    border: 1px solid rgba(10,30,60,0.05);
+    overflow: hidden;
+  }
+  .room-detail-head {
+    display: none;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 16px;
+    border-bottom: 1px solid #eef1f6;
+    background: #fff;
+  }
+  .room-detail-head .back-btn {
+    border: none;
+    background: #eef3f9;
+    color: var(--brand);
+    font-size: 12.5px;
+    font-weight: 700;
+    border-radius: 8px;
+    padding: 6px 10px;
+    cursor: pointer;
+    font-family: inherit;
+    flex-shrink: 0;
+  }
+  .room-detail-head .room-detail-title {
+    font-size: 12.5px;
+    color: var(--muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .chat-body {
     flex: 1;
@@ -1168,22 +1276,53 @@ function buildChatPageHtml() {
   .chat-body::-webkit-scrollbar { width: 6px; }
   .chat-body::-webkit-scrollbar-track { background: transparent; }
   .chat-body::-webkit-scrollbar-thumb { background: #d8dfeb; border-radius: 10px; }
-  .history-session {
-    background: #fff;
-    border: 1px solid #e7e9f0;
-    border-radius: 12px;
-  }
-  .history-session summary {
-    padding: 10px 14px;
-    font-size: 12.5px;
-    color: var(--muted);
-    cursor: pointer;
-  }
-  .history-body {
-    padding: 4px 14px 14px;
+  .room-placeholder {
+    flex: 1;
     display: flex;
     flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    color: var(--muted);
+    font-size: 13px;
+    text-align: center;
+    padding: 40px 20px;
+  }
+  .room-placeholder .ph-emoji { font-size: 28px; }
+  .pending-status-card {
+    margin-top: 4px;
+    max-width: 92%;
+    align-self: center;
+    width: 100%;
+    background: #fff9ec;
+    border: 1px solid #f3e3bd;
+    border-radius: 14px;
+    padding: 10px 14px;
+    font-size: 12.5px;
+    color: #8a6d1f;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
     gap: 10px;
+  }
+  .pending-status-card button {
+    flex-shrink: 0;
+    border: 1px solid #e3c6c6;
+    background: #fff;
+    color: #c1443d;
+    font-size: 11px;
+    border-radius: 8px;
+    padding: 5px 10px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .pending-status-card button:hover { background: #fdf2f2; }
+  @media (max-width: 720px) {
+    .chat-shell { position: relative; }
+    .room-list-panel { width: 100%; }
+    .chat-shell.mode-list .chat-column { display: none; }
+    .chat-shell.mode-detail .room-list-panel { display: none; }
+    .room-detail-head { display: flex; }
   }
   .bubble-row { display: flex; align-items: flex-end; gap: 8px; animation: bubbleIn 0.25s ease; }
   .bubble-row.bot { justify-content: flex-start; }
@@ -1237,49 +1376,6 @@ function buildChatPageHtml() {
   .typing span:nth-child(2) { animation-delay: 0.2s; }
   .typing span:nth-child(3) { animation-delay: 0.4s; }
   @keyframes blink { 0%, 80%, 100% { opacity: 0.3; } 40% { opacity: 1; } }
-
-  .pending-banner { display: none; background: #fff9ec; border-bottom: 1px solid #f3e3bd; }
-  .pending-banner.has-items { display: block; }
-  .pending-banner-head {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 10px 20px 4px;
-    font-size: 12.5px;
-    font-weight: 700;
-    color: #8a6d1f;
-  }
-  .pending-banner-list { padding: 2px 20px 10px; max-height: 160px; overflow-y: auto; }
-  .pending-item {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    padding: 6px 0;
-    border-bottom: 1px solid #f1e6c8;
-  }
-  .pending-item:last-child { border-bottom: none; }
-  .pending-item .q-text {
-    flex: 1;
-    min-width: 0;
-    font-size: 12.5px;
-    color: #6b5a2c;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .pending-item button {
-    flex-shrink: 0;
-    border: 1px solid #e3c6c6;
-    background: #fff;
-    color: #c1443d;
-    font-size: 11px;
-    border-radius: 8px;
-    padding: 4px 9px;
-    cursor: pointer;
-    font-family: inherit;
-  }
-  .pending-item button:hover { background: #fdf2f2; }
 
   .toast-stack {
     position: fixed;
@@ -1371,20 +1467,29 @@ function buildChatPageHtml() {
   <div class="toast-stack" id="toastStack"></div>
 
   <div id="chatWrap" class="chat-wrap" style="display:none;">
-    <div class="chat-column">
-      <div class="pending-banner" id="pendingBanner">
-        <div class="pending-banner-head">⏳ <span id="pendingBannerText">確認中の質問</span></div>
-        <div class="pending-banner-list" id="pendingBannerList"></div>
-      </div>
-      <div class="chat-body" id="chatBody"></div>
-      <div class="input-bar">
-        <div class="input-inner">
-          <input type="text" id="questionInput" placeholder="質問を入力してください" />
-          <button id="sendButton">
-            <svg viewBox="0 0 24 24"><path d="M2 21l21-9L2 3v7l15 2-15 2z"/></svg>
-          </button>
+    <div class="chat-shell mode-list" id="chatShell">
+      <div class="room-list-panel">
+        <div class="room-list-head">
+          <h3>質問一覧</h3>
+          <button class="new-room-btn" id="newRoomBtn" type="button">＋ 新しい質問</button>
         </div>
-        <div class="input-hint">自動回答です。内容が異なる場合は担当者までご確認ください。</div>
+        <div class="room-list" id="roomList"></div>
+      </div>
+      <div class="chat-column">
+        <div class="room-detail-head">
+          <button class="back-btn" id="backToListBtn" type="button">← 一覧</button>
+          <span class="room-detail-title" id="roomDetailTitle"></span>
+        </div>
+        <div class="chat-body" id="chatBody"></div>
+        <div class="input-bar">
+          <div class="input-inner">
+            <input type="text" id="questionInput" placeholder="質問を入力してください" />
+            <button id="sendButton">
+              <svg viewBox="0 0 24 24"><path d="M2 21l21-9L2 3v7l15 2-15 2z"/></svg>
+            </button>
+          </div>
+          <div class="input-hint">自動回答です。内容が異なる場合は担当者までご確認ください。</div>
+        </div>
       </div>
     </div>
   </div>
@@ -1393,9 +1498,8 @@ function buildChatPageHtml() {
 <script>
 (function () {
   var STORAGE_KEY = 'shpChatPassword';
-  var HISTORY_KEY = 'shpChatHistory';
-  var PENDING_KEY = 'shpChatPendingIds';
-  var MAX_SESSIONS = 20;
+  var ROOMS_KEY = 'shpChatRooms';
+  var MAX_ROOMS = 100;
   var POLL_INTERVAL_MS = 20000;
   var passwordRequired = ${config.chatPagePassword ? 'true' : 'false'};
 
@@ -1426,50 +1530,22 @@ function buildChatPageHtml() {
     try { window.sessionStorage.removeItem(STORAGE_KEY); } catch (e) { /* 無視 */ }
   }
 
-  // 過去の会話ログは、この人のブラウザ(localStorage)だけに残す。
-  // サーバー側やQ&A表には一切送らない。
-  function loadHistory() {
+  // 質問を送るたびに、1件1件を「部屋」としてこの人のブラウザ(localStorage)
+  // だけに記録する(公式LINEのトーク一覧のようなイメージ)。サーバー側やQ&A表
+  // には質問本文と回答以外は送らない。新しいものを先頭にして保存し、件数が
+  // 多くなりすぎないよう上限を設ける。
+  function loadRooms() {
     try {
-      var raw = window.localStorage.getItem(HISTORY_KEY);
+      var raw = window.localStorage.getItem(ROOMS_KEY);
       return raw ? JSON.parse(raw) : [];
     } catch (e) { return []; }
   }
-  function saveHistory() {
-    try { window.localStorage.setItem(HISTORY_KEY, JSON.stringify(history.slice(-MAX_SESSIONS))); } catch (e) { /* 無視 */ }
+  function saveRooms(list) {
+    try { window.localStorage.setItem(ROOMS_KEY, JSON.stringify(list.slice(0, MAX_ROOMS))); } catch (e) { /* 無視 */ }
   }
 
-  // 「担当者確認中」になった質問を覚えておき、回答が付いたら自動で表示する。
-  // 質問本文もあわせて保存しておき、「確認中の質問」一覧に表示できるようにする
-  // (以前のバージョンではIDの文字列だけを保存していたため、古い保存データが
-  // 残っていても読めるよう、文字列のままの場合はここで変換する)。
-  function loadPendingIds() {
-    try {
-      var raw = window.localStorage.getItem(PENDING_KEY);
-      var parsed = raw ? JSON.parse(raw) : [];
-      return parsed.map(function (x) {
-        return (typeof x === 'string') ? { id: x, question: '' } : x;
-      });
-    } catch (e) { return []; }
-  }
-  function savePendingIds(items) {
-    try { window.localStorage.setItem(PENDING_KEY, JSON.stringify(items)); } catch (e) { /* 無視 */ }
-  }
-  function removePendingId(id) {
-    var items = loadPendingIds().filter(function (x) { return x.id !== id; });
-    savePendingIds(items);
-    renderPendingPanel();
-  }
-
-  var history = loadHistory();
-  var currentSession = null;
-  var historyRendered = false;
-
-  function ensureCurrentSession() {
-    if (!currentSession) {
-      currentSession = { startedAt: new Date().toISOString(), messages: [] };
-      history.push(currentSession);
-    }
-  }
+  var rooms = loadRooms();
+  var activeRoomId = null;
 
   var roleSelectWrap = qs('roleSelect');
   var roleAskerBtn = qs('roleAskerBtn');
@@ -1479,10 +1555,12 @@ function buildChatPageHtml() {
   var gateSubmit = qs('gate-submit');
   var gatePassword = qs('gate-password');
   var gateError = qs('gate-error');
+  var chatShell = qs('chatShell');
+  var roomListEl = qs('roomList');
+  var newRoomBtn = qs('newRoomBtn');
+  var backToListBtn = qs('backToListBtn');
+  var roomDetailTitle = qs('roomDetailTitle');
   var chatBody = qs('chatBody');
-  var pendingBanner = qs('pendingBanner');
-  var pendingBannerText = qs('pendingBannerText');
-  var pendingBannerList = qs('pendingBannerList');
   var toastStack = qs('toastStack');
   var input = qs('questionInput');
   var sendButton = qs('sendButton');
@@ -1534,26 +1612,158 @@ function buildChatPageHtml() {
     return { row: row, bubble: bubble };
   }
 
-  function renderHistory(sessions) {
-    for (var i = sessions.length - 1; i >= 0; i--) {
-      var s = sessions[i];
-      if (!s.messages || !s.messages.length) continue;
-      var details = document.createElement('details');
-      details.className = 'history-session';
-      var summary = document.createElement('summary');
-      summary.textContent = formatWhen(s.startedAt) + 'の会話';
-      details.appendChild(summary);
-      var body = document.createElement('div');
-      body.className = 'history-body';
-      s.messages.forEach(function (m) {
-        var built = buildBubbleRow(m.who, m.text, m.at);
-        built.row.style.animation = 'none';
-        body.appendChild(built.row);
-      });
-      details.appendChild(body);
-      chatBody.appendChild(details);
+  function truncateText(s, n) {
+    if (!s) return '';
+    return s.length > n ? s.slice(0, n) + '…' : s;
+  }
+
+  function updateRoomDetailHead(room) {
+    if (roomDetailTitle) roomDetailTitle.textContent = room ? truncateText(room.question, 28) : '新しい質問';
+  }
+
+  function enterDetailModeOnMobile() {
+    if (!chatShell) return;
+    chatShell.classList.remove('mode-list');
+    chatShell.classList.add('mode-detail');
+  }
+
+  function enterListModeOnMobile() {
+    if (!chatShell) return;
+    chatShell.classList.remove('mode-detail');
+    chatShell.classList.add('mode-list');
+  }
+
+  // 質問一覧(左側)を、公式LINEのトーク一覧のように描画する。確認中(⏳)・
+  // 回答済み(✓)・取消済みがひと目でわかるようバッジを付け、まだ見ていない
+  // 回答があれば太字＋緑の丸で知らせる。確認中のものはその場で取消もできる。
+  function renderRoomList() {
+    if (!roomListEl) return;
+    roomListEl.innerHTML = '';
+    if (!rooms.length) {
+      var empty = document.createElement('div');
+      empty.className = 'room-empty';
+      empty.textContent = 'まだ質問がありません。';
+      roomListEl.appendChild(empty);
+      return;
+    }
+    rooms.forEach(function (r) {
+      var row = document.createElement('div');
+      row.className = 'room-row' + (r.id === activeRoomId ? ' active' : '') + (r.unread ? ' unread' : '');
+      row.addEventListener('click', function () { selectRoom(r.id); });
+
+      var qText = document.createElement('div');
+      qText.className = 'room-q';
+      qText.textContent = r.question;
+      row.appendChild(qText);
+
+      var meta = document.createElement('div');
+      meta.className = 'room-meta';
+      if (r.unread) {
+        var dot = document.createElement('span');
+        dot.className = 'room-unread-dot';
+        meta.appendChild(dot);
+      }
+      var badge = document.createElement('span');
+      var badgeKind = r.status === 'pending' ? 'pending' : r.status === 'cancelled' ? 'cancelled' : (r.status === 'sending' ? 'pending' : 'answered');
+      badge.className = 'room-badge ' + badgeKind;
+      badge.textContent = r.status === 'pending' ? '⏳ 確認中'
+        : r.status === 'sending' ? '送信中…'
+        : r.status === 'cancelled' ? '取消済み'
+        : '✓ 回答済み';
+      meta.appendChild(badge);
+      var timeEl = document.createElement('span');
+      timeEl.textContent = formatWhen(r.askedAt);
+      meta.appendChild(timeEl);
+      row.appendChild(meta);
+
+      if (r.status === 'pending' && r.pendingId) {
+        var cancelBtn = document.createElement('button');
+        cancelBtn.type = 'button';
+        cancelBtn.className = 'room-cancel';
+        cancelBtn.textContent = '取消';
+        cancelBtn.addEventListener('click', function (e) {
+          e.stopPropagation();
+          deleteRoomPending(r);
+        });
+        row.appendChild(cancelBtn);
+      }
+
+      roomListEl.appendChild(row);
+    });
+  }
+
+  // 確認中の質問に対して、チャット欄の下に「確認中です」カード(取消ボタン付き)を出す。
+  function showPendingStatusCard(room) {
+    if (activeRoomId !== room.id) return;
+    var card = document.createElement('div');
+    card.className = 'pending-status-card';
+    card.id = 'pendingStatusCard';
+    var msg = document.createElement('span');
+    msg.textContent = '確認中です。回答が届くまでお待ちください。';
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = '質問を取消';
+    btn.addEventListener('click', function () { deleteRoomPending(room); });
+    card.appendChild(msg);
+    card.appendChild(btn);
+    chatBody.appendChild(card);
+    chatBody.scrollTop = chatBody.scrollHeight;
+  }
+
+  // 右側(会話本体)を、選んだ部屋の内容だけで描画し直す。部屋を選び直した時や
+  // 取消した時など、「これまでの履歴を読み直す」場面でだけ使うので、吹き出しの
+  // 登場アニメーションは付けない(付けると開くたびにパラパラ光って煩わしいため)。
+  function renderRoomDetail(room) {
+    chatBody.innerHTML = '';
+    updateRoomDetailHead(room);
+    if (!room) {
+      var ph = document.createElement('div');
+      ph.className = 'room-placeholder';
+      var emoji = document.createElement('div');
+      emoji.className = 'ph-emoji';
+      emoji.textContent = '👋';
+      var text = document.createElement('div');
+      text.textContent = 'SHPに関するご質問を入力してください。';
+      ph.appendChild(emoji);
+      ph.appendChild(text);
+      chatBody.appendChild(ph);
+      return;
+    }
+    room.messages.forEach(function (m) {
+      var built = buildBubbleRow(m.who, m.text, m.at);
+      built.row.style.animation = 'none';
+      chatBody.appendChild(built.row);
+    });
+    chatBody.scrollTop = chatBody.scrollHeight;
+    if (room.status === 'pending' && room.pendingId) {
+      showPendingStatusCard(room);
     }
   }
+
+  function selectRoom(id) {
+    var matches = rooms.filter(function (r) { return r.id === id; });
+    if (!matches.length) return;
+    var room = matches[0];
+    activeRoomId = id;
+    if (room.unread) {
+      room.unread = false;
+      saveRooms(rooms);
+    }
+    renderRoomDetail(room);
+    renderRoomList();
+    enterDetailModeOnMobile();
+  }
+
+  function startNewRoom() {
+    activeRoomId = null;
+    renderRoomDetail(null);
+    renderRoomList();
+    enterDetailModeOnMobile();
+    input.focus();
+  }
+
+  if (newRoomBtn) newRoomBtn.addEventListener('click', startNewRoom);
+  if (backToListBtn) backToListBtn.addEventListener('click', enterListModeOnMobile);
 
   function showRoleSelect() {
     clearStoredPassword();
@@ -1574,12 +1784,8 @@ function buildChatPageHtml() {
     roleSelectWrap.style.display = 'none';
     gateWrap.style.display = 'none';
     chatWrap.style.display = 'flex';
-    if (!historyRendered) {
-      historyRendered = true;
-      renderHistory(history);
-      addBubble('こんにちは。SHPに関するご質問を入力してください。', 'bot', false);
-    }
-    renderPendingPanel();
+    renderRoomList();
+    renderRoomDetail(null);
     input.focus();
   }
 
@@ -1619,26 +1825,41 @@ function buildChatPageHtml() {
     rolePromoterBtn.addEventListener('click', function () { window.location.href = '/promoter'; });
   }
 
-  function addBubble(text, who, record, highlight) {
-    var at = new Date().toISOString();
-    var built = buildBubbleRow(who, text, at);
-    if (highlight) {
-      built.row.classList.add('bubble-highlight');
-      setTimeout(function () { built.row.classList.remove('bubble-highlight'); }, 2200);
-    }
-    chatBody.appendChild(built.row);
-    chatBody.scrollTop = chatBody.scrollHeight;
-    if (record !== false) {
-      ensureCurrentSession();
-      currentSession.messages.push({ who: who, text: text, at: at });
-      saveHistory();
-    }
-    return built.bubble;
+  // 1件の部屋(=1回の質問)を新規作成し、一覧の先頭に追加する。
+  function createRoom(question) {
+    var now = new Date().toISOString();
+    var room = {
+      id: 'r_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
+      question: question,
+      messages: [],
+      status: 'sending',
+      pendingId: null,
+      unread: false,
+      askedAt: now,
+      updatedAt: now
+    };
+    rooms.unshift(room);
+    if (rooms.length > MAX_ROOMS) rooms.length = MAX_ROOMS;
+    saveRooms(rooms);
+    return room;
   }
 
-  function truncateText(s, n) {
-    if (!s) return '';
-    return s.length > n ? s.slice(0, n) + '…' : s;
+  // その部屋にメッセージを1件追加して保存する。いま画面に開いている部屋であれば、
+  // その場で吹き出しも追加する(highlightを立てると、新着が一瞬光って知らせる)。
+  function addRoomMessage(room, who, text, highlight) {
+    var at = new Date().toISOString();
+    room.messages.push({ who: who, text: text, at: at });
+    room.updatedAt = at;
+    saveRooms(rooms);
+    if (activeRoomId === room.id) {
+      var built = buildBubbleRow(who, text, at);
+      if (highlight) {
+        built.row.classList.add('bubble-highlight');
+        setTimeout(function () { built.row.classList.remove('bubble-highlight'); }, 2200);
+      }
+      chatBody.appendChild(built.row);
+      chatBody.scrollTop = chatBody.scrollHeight;
+    }
   }
 
   // 画面上部に短時間だけ表示する通知(回答到着・取消の成功/失敗など、
@@ -1672,12 +1893,11 @@ function buildChatPageHtml() {
     if (row) row.remove();
   }
 
-  // 担当者確認中(pending)になった質問を、定期的に裏側で確認しにいき、
-  // 回答が付いていたら自動でチャットに吹き出しとして表示する(新着が
-  // わかるよう、吹き出しを一瞬ハイライトし、画面上部にも通知を出す)。
-  function pollPendingOnce(item) {
-    var id = item.id;
-    fetch('/api/ask-status?id=' + encodeURIComponent(id), {
+  // 担当者確認中(pending)の部屋を、定期的に裏側で確認しにいき、回答が付いて
+  // いたら自動で反映する。いま開いている部屋なら吹き出しを一瞬ハイライトし、
+  // 開いていなければ一覧側を「未読」にする。どちらも画面上部に通知を出す。
+  function pollRoomOnce(room) {
+    fetch('/api/ask-status?id=' + encodeURIComponent(room.pendingId), {
       headers: { 'x-chat-password': getStoredPassword() }
     })
       .then(function (res) {
@@ -1687,73 +1907,52 @@ function buildChatPageHtml() {
       .then(function (data) {
         if (!data) return;
         if (data.status === 'answered' && data.answer) {
-          addBubble(data.answer, 'bot', true, true);
-          showToast('回答が届きました：' + truncateText(item.question, 26));
-          removePendingId(id);
-        } else if (data.status === 'not_found' || data.status === 'cancelled') {
-          removePendingId(id);
+          room.status = 'answered';
+          room.pendingId = null;
+          var isActive = activeRoomId === room.id;
+          if (isActive) {
+            var card = qs('pendingStatusCard');
+            if (card) card.remove();
+          } else {
+            room.unread = true;
+          }
+          addRoomMessage(room, 'bot', data.answer, isActive);
+          showToast('回答が届きました：' + truncateText(room.question, 26));
+          renderRoomList();
+        } else if (data.status === 'cancelled' || data.status === 'not_found') {
+          room.status = 'cancelled';
+          room.pendingId = null;
+          saveRooms(rooms);
+          renderRoomList();
+          if (activeRoomId === room.id) renderRoomDetail(room);
         }
       })
       .catch(function () { /* 通信エラー時は次回のポーリングに任せる */ });
   }
 
   function pollAllPending() {
-    var items = loadPendingIds();
-    items.forEach(pollPendingOnce);
+    rooms
+      .filter(function (r) { return r.status === 'pending' && r.pendingId; })
+      .forEach(pollRoomOnce);
   }
 
-  function trackPendingId(id, question) {
-    if (!id) return;
-    var items = loadPendingIds();
-    if (!items.some(function (x) { return x.id === id; })) {
-      items.push({ id: id, question: question || '' });
-      savePendingIds(items);
-    }
-    renderPendingPanel();
-  }
-
-  // 確認中の質問一覧を、チャット欄の上に常に見える形で描画し、それぞれに
-  // 「取消」ボタンをつける(送信ミスなどで不要になった質問を、回答が届く前に
-  // 取り消せるようにするため)。
-  function renderPendingPanel() {
-    if (!pendingBanner) return;
-    var items = loadPendingIds();
-    pendingBannerList.innerHTML = '';
-    if (!items.length) {
-      pendingBanner.classList.remove('has-items');
-      return;
-    }
-    pendingBanner.classList.add('has-items');
-    pendingBannerText.textContent = '確認中の質問（' + items.length + '件）';
-    items.forEach(function (p) {
-      var row = document.createElement('div');
-      row.className = 'pending-item';
-      var qText = document.createElement('span');
-      qText.className = 'q-text';
-      qText.textContent = p.question || '確認中の質問';
-      var delBtn = document.createElement('button');
-      delBtn.type = 'button';
-      delBtn.textContent = '取消';
-      delBtn.addEventListener('click', function () { deletePending(p.id); });
-      row.appendChild(qText);
-      row.appendChild(delBtn);
-      pendingBannerList.appendChild(row);
-    });
-  }
-
-  // まだ回答が付いていない自分の質問を取り消す。既に回答済みの場合はサーバー側で
-  // 無視されるので(回答は消さない)、そのままローカルの一覧からも消してよい。
-  // 成功・失敗のどちらになったかは、必ず画面上部の通知でわかるようにする。
-  function deletePending(id) {
+  // まだ回答が付いていない質問を取り消す。既に回答済みの場合はサーバー側で
+  // 無視されるので(回答は消さない)。成功・失敗のどちらになったかは、必ず
+  // 画面上部の通知でわかるようにする。
+  function deleteRoomPending(room) {
     fetch('/api/ask-delete', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-chat-password': getStoredPassword() },
-      body: JSON.stringify({ id: id })
+      body: JSON.stringify({ id: room.pendingId })
     })
       .then(function (res) { return res.ok ? res.json() : null; })
       .then(function (data) {
         if (data && data.ok) {
-          removePendingId(id);
+          room.status = 'cancelled';
+          room.pendingId = null;
+          saveRooms(rooms);
+          renderRoomList();
+          if (activeRoomId === room.id) renderRoomDetail(room);
           showToast('質問を取り消しました。');
         } else {
           showToast('取り消しに失敗しました。少し時間をおいて、もう一度お試しください。');
@@ -1767,9 +1966,18 @@ function buildChatPageHtml() {
   function send() {
     var question = input.value.trim();
     if (!question) return;
-    addBubble(question, 'user');
     input.value = '';
     sendButton.disabled = true;
+
+    // 質問1件につき新しい部屋を1つ作り、その場で開く(公式LINEで新しいトークを
+    // 始めるイメージ)。
+    var room = createRoom(question);
+    activeRoomId = room.id;
+    chatBody.innerHTML = '';
+    updateRoomDetailHead(room);
+    renderRoomList();
+    enterDetailModeOnMobile();
+    addRoomMessage(room, 'user', question, false);
     addTyping();
 
     fetch('/api/ask', {
@@ -1791,14 +1999,19 @@ function buildChatPageHtml() {
         var text = (data && data.answer)
           ? data.answer
           : '只今エラーが発生しました。お手数ですが、時間をおいて再度お試しください。';
-        addBubble(text, 'bot');
-        if (data && data.answered === false && data.pendingId) {
-          trackPendingId(data.pendingId, question);
-        }
+        var stillPending = !!(data && data.answered === false && data.pendingId);
+        room.status = stillPending ? 'pending' : 'answered';
+        if (stillPending) room.pendingId = data.pendingId;
+        addRoomMessage(room, 'bot', text, false);
+        if (stillPending) showPendingStatusCard(room);
+        renderRoomList();
       })
       .catch(function () {
         removeTyping();
-        addBubble('通信エラーが発生しました。お手数ですが、時間をおいて再度お試しください。', 'bot');
+        room.status = 'answered';
+        saveRooms(rooms);
+        addRoomMessage(room, 'bot', '通信エラーが発生しました。お手数ですが、時間をおいて再度お試しください。', false);
+        renderRoomList();
       })
       .finally(function () {
         sendButton.disabled = false;
