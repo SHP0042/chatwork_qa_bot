@@ -1075,11 +1075,13 @@ function buildChatPageHtml() {
   html, body {
     margin: 0;
     height: 100%;
+    overflow: hidden;
+    overscroll-behavior: none;
     font-family: "Hiragino Sans", "Hiragino Kaku Gothic ProN", "游ゴシック", "Yu Gothic", "Meiryo", sans-serif;
     background: radial-gradient(ellipse 900px 500px at 50% 0%, #f3f8ff 0%, var(--bg) 70%);
     color: var(--text);
   }
-  .app { display: flex; flex-direction: column; height: 100vh; }
+  .app { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
   .top-bar {
     background: linear-gradient(135deg, var(--brand), var(--brand-dark));
     color: #fff;
@@ -1192,7 +1194,7 @@ function buildChatPageHtml() {
     flex-shrink: 0;
   }
   .new-room-btn:hover { transform: scale(1.05); }
-  .room-list { flex: 1; overflow-y: auto; padding: 6px; }
+  .room-list { flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 6px; }
   .room-list::-webkit-scrollbar { width: 6px; }
   .room-list::-webkit-scrollbar-track { background: transparent; }
   .room-list::-webkit-scrollbar-thumb { background: #d8dfeb; border-radius: 10px; }
@@ -1279,6 +1281,7 @@ function buildChatPageHtml() {
   .chat-body {
     flex: 1;
     overflow-y: auto;
+    overscroll-behavior: contain;
     padding: 24px 20px 14px;
     display: flex;
     flex-direction: column;
@@ -2077,6 +2080,7 @@ function buildPromoterAdminHtml() {
   html, body {
     margin: 0;
     min-height: 100%;
+    overscroll-behavior-y: none;
     font-family: "Hiragino Sans", "Hiragino Kaku Gothic ProN", "游ゴシック", "Yu Gothic", "Meiryo", sans-serif;
     background: radial-gradient(ellipse 900px 500px at 50% 0%, #f3f8ff 0%, var(--bg) 70%);
     color: var(--text);
