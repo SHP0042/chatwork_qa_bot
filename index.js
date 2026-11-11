@@ -982,8 +982,9 @@ async function runFollowupCheck({ log = console.log } = {}) {
         const mentions = config.holderAccountIds.map((id) => mentionTag(id)).join(' ');
         await sendMessage(
           `${mentions}\n`
-          + `未回答のままです：${p.question}\n`
-          + `→ https://shp-company.site/qa_bot/promoter/`
+          + `サイト内に未回答の質問が届いています。\n\n`
+          + `【質問】\n${p.question}\n\n`
+          + `▼回答はこちらから\nhttps://shp-company.site/qa_bot/promoter/`
         );
         await updatePendingRow(p.sheetRowNumber, { reminded: 'yes' });
         reminded++;
@@ -2832,8 +2833,9 @@ async function createSitePendingAndNotify(question) {
       const mentions = config.holderAccountIds.map((id) => mentionTag(id)).join(' ');
       await sendMessage(
         `${mentions}\n`
-        + `未回答の質問：${question}\n`
-        + `→ https://shp-company.site/qa_bot/promoter/`
+        + `サイト内に未回答の質問が届いています。\n\n`
+        + `【質問】\n${question}\n\n`
+        + `▼回答はこちらから\nhttps://shp-company.site/qa_bot/promoter/`
       );
     } catch (e) {
       console.error('Chatworkへの通知送信に失敗しました:', e);
