@@ -1235,6 +1235,38 @@ function buildChatPageHtml() {
   .typing span:nth-child(3) { animation-delay: 0.4s; }
   @keyframes blink { 0%, 80%, 100% { opacity: 0.3; } 40% { opacity: 1; } }
 
+  .pending-panel { display: none; padding: 2px 20px; background: #fbfcff; border-top: 1px solid #eef1f6; max-height: 130px; overflow-y: auto; }
+  .pending-panel.has-items { display: block; padding: 8px 20px; }
+  .pending-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 6px 0;
+    border-bottom: 1px solid #f1f3f8;
+  }
+  .pending-item:last-child { border-bottom: none; }
+  .pending-item .q-text {
+    flex: 1;
+    min-width: 0;
+    font-size: 12.5px;
+    color: var(--muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .pending-item button {
+    flex-shrink: 0;
+    border: 1px solid #e3c6c6;
+    background: #fff;
+    color: #c1443d;
+    font-size: 11px;
+    border-radius: 8px;
+    padding: 4px 9px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .pending-item button:hover { background: #fdf2f2; }
   .input-bar { padding: 14px 20px 20px; border-top: 1px solid #eef1f6; background: #fff; }
   .input-inner {
     display: flex;
@@ -1295,6 +1327,7 @@ function buildChatPageHtml() {
   <div id="chatWrap" class="chat-wrap" style="display:none;">
     <div class="chat-column">
       <div class="chat-body" id="chatBody"></div>
+      <div class="pending-panel" id="pendingPanel"></div>
       <div class="input-bar">
         <div class="input-inner">
           <input type="text" id="questionInput" placeholder="質問を入力してください" />
@@ -1356,19 +1389,26 @@ function buildChatPageHtml() {
     try { window.localStorage.setItem(HISTORY_KEY, JSON.stringify(history.slice(-MAX_SESSIONS))); } catch (e) { /* 無視 */ }
   }
 
-  // 「担当者確認中」になった質問のIDを覚えておき、回答が付いたら自動で表示する。
+  // 「担当者確認中」になった質問を覚えておき、回答が付いたら自動で表示する。
+  // 質問本文もあわせて保存しておき、「確認中の質問」一覧に表示できるようにする
+  // (以前のバージョンではIDの文字列だけを保存していたため、古い保存データが
+  // 残っていても読めるよう、文字列のままの場合はここで変換する)。
   function loadPendingIds() {
     try {
       var raw = window.localStorage.getItem(PENDING_KEY);
-      return raw ? JSON.parse(raw) : [];
+      var parsed = raw ? JSON.parse(raw) : [];
+      return parsed.map(function (x) {
+        return (typeof x === 'string') ? { id: x, question: '' } : x;
+      });
     } catch (e) { return []; }
   }
-  function savePendingIds(ids) {
-    try { window.localStorage.setItem(PENDING_KEY, JSON.stringify(ids)); } catch (e) { /* 無視 */ }
+  function savePendingIds(items) {
+    try { window.localStorage.setItem(PENDING_KEY, JSON.stringify(items)); } catch (e) { /* 無視 */ }
   }
   function removePendingId(id) {
-    var ids = loadPendingIds().filter(function (x) { return x !== id; });
-    savePendingIds(ids);
+    var items = loadPendingIds().filter(function (x) { return x.id !== id; });
+    savePendingIds(items);
+    renderPendingPanel();
   }
 
   var history = loadHistory();
@@ -1391,6 +1431,7 @@ function buildChatPageHtml() {
   var gatePassword = qs('gate-password');
   var gateError = qs('gate-error');
   var chatBody = qs('chatBody');
+  var pendingPanel = qs('pendingPanel');
   var input = qs('questionInput');
   var sendButton = qs('sendButton');
   // ヘッダーに表示しているロゴ画像を、ボットの吹き出しの横のアイコンにも使い回す
@@ -1486,6 +1527,7 @@ function buildChatPageHtml() {
       renderHistory(history);
       addBubble('こんにちは。SHPに関するご質問を入力してください。', 'bot', false);
     }
+    renderPendingPanel();
     input.focus();
   }
 
@@ -1578,17 +1620,62 @@ function buildChatPageHtml() {
   }
 
   function pollAllPending() {
-    var ids = loadPendingIds();
-    ids.forEach(pollPendingOnce);
+    var items = loadPendingIds();
+    items.forEach(function (p) { pollPendingOnce(p.id); });
   }
 
-  function trackPendingId(id) {
+  function trackPendingId(id, question) {
     if (!id) return;
-    var ids = loadPendingIds();
-    if (ids.indexOf(id) === -1) {
-      ids.push(id);
-      savePendingIds(ids);
+    var items = loadPendingIds();
+    if (!items.some(function (x) { return x.id === id; })) {
+      items.push({ id: id, question: question || '' });
+      savePendingIds(items);
     }
+    renderPendingPanel();
+  }
+
+  // 確認中の質問一覧を描画し、それぞれに「取消」ボタンをつける。
+  // 送信ミスなどで不要になった質問を、回答が届く前に取り消せるようにするため。
+  function renderPendingPanel() {
+    if (!pendingPanel) return;
+    var items = loadPendingIds();
+    pendingPanel.innerHTML = '';
+    if (!items.length) {
+      pendingPanel.classList.remove('has-items');
+      return;
+    }
+    pendingPanel.classList.add('has-items');
+    items.forEach(function (p) {
+      var row = document.createElement('div');
+      row.className = 'pending-item';
+      var qText = document.createElement('span');
+      qText.className = 'q-text';
+      qText.textContent = '⏳ ' + (p.question || '確認中の質問');
+      var delBtn = document.createElement('button');
+      delBtn.type = 'button';
+      delBtn.textContent = '取消';
+      delBtn.addEventListener('click', function () { deletePending(p.id); });
+      row.appendChild(qText);
+      row.appendChild(delBtn);
+      pendingPanel.appendChild(row);
+    });
+  }
+
+  // まだ回答が付いていない自分の質問を取り消す。既に回答済みの場合はサーバー側で
+  // 無視されるので(回答は消さない)、そのままローカルの一覧からも消してよい。
+  function deletePending(id) {
+    fetch('/api/ask-delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-chat-password': getStoredPassword() },
+      body: JSON.stringify({ id: id })
+    })
+      .then(function (res) { return res.ok ? res.json() : null; })
+      .then(function (data) {
+        if (data && data.ok) {
+          removePendingId(id);
+        }
+      })
+      .catch(function () { /* 通信エラー時はそのままにしておき、後でもう一度試してもらう */ });
   }
 
   function send() {
@@ -1620,7 +1707,7 @@ function buildChatPageHtml() {
           : '只今エラーが発生しました。お手数ですが、時間をおいて再度お試しください。';
         addBubble(text, 'bot');
         if (data && data.answered === false && data.pendingId) {
-          trackPendingId(data.pendingId);
+          trackPendingId(data.pendingId, question);
         }
       })
       .catch(function () {
@@ -2140,7 +2227,7 @@ function allowCors(req, res) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-chat-password, x-promoter-password');
 }
 
-['/api/ask-login', '/api/ask', '/api/ask-status', '/api/promoter-login', '/api/promoter-pending', '/api/promoter-answer', '/api/promoter-delete'].forEach(
+['/api/ask-login', '/api/ask', '/api/ask-status', '/api/ask-delete', '/api/promoter-login', '/api/promoter-pending', '/api/promoter-answer', '/api/promoter-delete'].forEach(
   (path) => {
     app.options(path, (req, res) => {
       allowCors(req, res);
@@ -2284,6 +2371,37 @@ app.get('/api/ask-status', async (req, res) => {
     return res.json({ status: 'pending' });
   } catch (e) {
     console.error('/api/ask-status エラー:', e);
+    res.status(500).json({ error: 'internal error' });
+  }
+});
+
+// 接客担当が、まだ回答の付いていない自分の質問を取り消す(送信ミス等のため)。
+// 既に回答が付いている場合は取り消せない(回答はそのまま残す)。
+app.post('/api/ask-delete', express.json(), async (req, res) => {
+  allowCors(req, res);
+  if (!checkChatPassword(req)) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  try {
+    const id = ((req.body && req.body.id) || '').toString();
+    if (!id) return res.status(400).json({ error: 'id is required' });
+
+    const pending = await listPendingRows();
+    const target = pending.find((p) => p.id === id && p.roomId === 'site-chat');
+    if (!target) return res.status(404).json({ ok: false, error: 'not found' });
+    if (target.status !== 'pending') {
+      return res.json({ ok: true, alreadyResolved: true });
+    }
+
+    await updatePendingRow(target.sheetRowNumber, {
+      status: 'cancelled',
+      answeredBy: '接客担当(自社サイト・取消)',
+      answeredAt: new Date().toISOString(),
+    });
+
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('/api/ask-delete エラー:', e);
     res.status(500).json({ error: 'internal error' });
   }
 });
