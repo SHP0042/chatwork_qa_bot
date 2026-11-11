@@ -44,12 +44,6 @@ const config = {
   // すべて(複数あれば改行区切りで)つなげてその行の回答とする。
   faqBlocks: process.env.FAQ_BLOCKS || 'B:C,D,E,F;L:M,N,O,P',
   googleServiceAccountJson: required('GOOGLE_SERVICE_ACCOUNT_JSON'),
-  // 設定すると、ボット(サービスアカウント)が単体で接続するのではなく、
-  // Google Workspaceのドメイン全体の委譲(Domain-wide delegation)を使って
-  // このユーザーに成り代わってスプレッドシートを読み書きする。
-  // (保護されたシート/範囲の編集権限を、ロボット用アカウントではなく
-  // このユーザー宛てに設定している場合に必要)
-  googleImpersonateEmail: process.env.GOOGLE_IMPERSONATE_EMAIL || null,
 
   // LLM
   geminiApiKey: required('GEMINI_API_KEY'),
@@ -205,13 +199,7 @@ let sheetsClient = null;
 async function getSheets() {
   if (sheetsClient) return sheetsClient;
   const credentials = loadCredentials();
-  const auth = new google.auth.GoogleAuth({
-    credentials,
-    scopes: SHEETS_SCOPES,
-    ...(config.googleImpersonateEmail
-      ? { clientOptions: { subject: config.googleImpersonateEmail } }
-      : {}),
-  });
+  const auth = new google.auth.GoogleAuth({ credentials, scopes: SHEETS_SCOPES });
   const client = await auth.getClient();
   sheetsClient = google.sheets({ version: 'v4', auth: client });
   return sheetsClient;
