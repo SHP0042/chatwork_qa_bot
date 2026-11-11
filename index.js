@@ -1507,7 +1507,6 @@ function buildChatPageHtml() {
 (function () {
   var STORAGE_KEY = 'shpChatPassword';
   var READ_IDS_KEY = 'shpChatReadIds';
-  var HIDDEN_IDS_KEY = 'shpChatHiddenIds';
   var POLL_INTERVAL_MS = 20000;
   var passwordRequired = ${config.chatPagePassword ? 'true' : 'false'};
 
@@ -1539,9 +1538,9 @@ function buildChatPageHtml() {
   }
 
   // 質問一覧(部屋)は、誰が聞いた質問でも接客担当全員が同じものを見られるよう、
-  // サーバー側(保留シート)を正として毎回取得する。「既読」「このデバイスで
-  // 一覧から消した」という、人それぞれ違っていい情報だけを、この端末の
-  // localStorageに小さく保存しておく。
+  // サーバー側(保留シート)を正として毎回取得する。「既読」かどうかだけは
+  // 人それぞれ違っていい情報なので、この端末のlocalStorageに小さく保存しておく。
+  // (削除は全員の画面から消える共有の操作なので、サーバー側で管理する)
   function loadIdList(key) {
     try {
       var raw = window.localStorage.getItem(key);
@@ -1554,17 +1553,11 @@ function buildChatPageHtml() {
   }
 
   var readIds = loadIdList(READ_IDS_KEY);
-  var hiddenIds = loadIdList(HIDDEN_IDS_KEY);
 
   function markRead(id) {
     if (readIds.indexOf(id) !== -1) return;
     readIds.push(id);
     saveIdList(READ_IDS_KEY, readIds);
-  }
-  function markHidden(id) {
-    if (hiddenIds.indexOf(id) !== -1) return;
-    hiddenIds.push(id);
-    saveIdList(HIDDEN_IDS_KEY, hiddenIds);
   }
 
   // サーバーから取ってきた1件分のデータを、画面で使う「部屋」の形に変換する。
@@ -1952,7 +1945,6 @@ function buildChatPageHtml() {
 
     var justResolved = [];
     var merged = items
-      .filter(function (it) { return hiddenIds.indexOf(it.id) === -1; })
       .map(function (it) {
         var prev = prevById[it.id];
         var room = roomFromServerItem(it);
@@ -2033,22 +2025,35 @@ function buildChatPageHtml() {
       });
   }
 
-  // 回答済み・取消済みなど、もう動きのない過去の質問を一覧から消す。これは
-  // 質問一覧が接客担当全員で共有されているため、サーバー側のデータは消さず、
-  // 「この端末の画面には今後表示しない」という扱いにする(他の人の画面には
-  // 引き続き残る)。確認中の質問はここでは扱わない(その場合は上の「取消」を使う)。
+  // 回答済み・取消済みなど、もう動きのない過去の質問を一覧から消す。質問一覧は
+  // 接客担当全員で共有しているため、ここで削除すると全員の画面から消える
+  // (シート上の行自体は履歴として残る)。確認中の質問はここでは扱わない
+  // (その場合は上の「取消」を使う)。
   function deleteRoomLocal(room) {
-    if (!window.confirm('この質問を一覧から削除しますか？(自分の画面からのみ消え、この操作は取り消せません)')) return;
-    markHidden(room.id);
-    var idx = rooms.findIndex(function (r) { return r.id === room.id; });
-    if (idx === -1) return;
-    rooms.splice(idx, 1);
-    if (activeRoomId === room.id) {
-      activeRoomId = null;
-      renderRoomDetail(null);
-    }
-    renderRoomList();
-    showToast('質問を削除しました。');
+    if (!window.confirm('この質問を一覧から削除しますか？(全員の画面から消え、この操作は取り消せません)')) return;
+    fetch('/api/ask-hide', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-chat-password': getStoredPassword() },
+      body: JSON.stringify({ id: room.id })
+    })
+      .then(function (res) { return res.ok ? res.json() : null; })
+      .then(function (data) {
+        if (data && data.ok) {
+          var idx = rooms.findIndex(function (r) { return r.id === room.id; });
+          if (idx !== -1) rooms.splice(idx, 1);
+          if (activeRoomId === room.id) {
+            activeRoomId = null;
+            renderRoomDetail(null);
+          }
+          renderRoomList();
+          showToast('質問を削除しました。');
+        } else {
+          showToast('削除に失敗しました。少し時間をおいて、もう一度お試しください。');
+        }
+      })
+      .catch(function () {
+        showToast('通信エラーのため削除できませんでした。少し時間をおいて、もう一度お試しください。');
+      });
   }
 
   function send() {
@@ -2666,7 +2671,7 @@ function allowCors(req, res) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-chat-password, x-promoter-password');
 }
 
-['/api/ask-login', '/api/ask', '/api/ask-list', '/api/ask-status', '/api/ask-delete', '/api/promoter-login', '/api/promoter-pending', '/api/promoter-answer', '/api/promoter-delete'].forEach(
+['/api/ask-login', '/api/ask', '/api/ask-list', '/api/ask-status', '/api/ask-delete', '/api/ask-hide', '/api/promoter-login', '/api/promoter-pending', '/api/promoter-answer', '/api/promoter-delete'].forEach(
   (path) => {
     app.options(path, (req, res) => {
       allowCors(req, res);
@@ -2828,7 +2833,7 @@ app.get('/api/ask-list', async (req, res) => {
   try {
     const pending = await listPendingRows();
     const items = pending
-      .filter((p) => p.roomId === 'site-chat')
+      .filter((p) => p.roomId === 'site-chat' && p.status !== 'hidden')
       .map((p) => ({
         id: p.id,
         question: p.question,
@@ -2897,6 +2902,34 @@ app.post('/api/ask-delete', express.json(), async (req, res) => {
   } catch (e) {
     console.error('/api/ask-delete エラー:', e);
     res.status(500).json({ error: 'internal error' });
+  }
+});
+
+// 回答済み・取消済みなど、もう動きのない過去の質問を質問一覧から消す。
+// 質問一覧は接客担当全員で共有しているため、ここでの削除は全員の画面から
+// 消える(statusを'hidden'にして、一覧取得時に除外するだけで、シート上の
+// 行自体は履歴として残す)。確認中(pending)のものはここでは扱わない。
+app.post('/api/ask-hide', express.json(), async (req, res) => {
+  allowCors(req, res);
+  if (!checkChatPassword(req)) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  try {
+    const id = ((req.body && req.body.id) || '').toString();
+    if (!id) return res.status(400).json({ error: 'id is required' });
+
+    const pending = await listPendingRows();
+    const target = pending.find((p) => p.id === id && p.roomId === 'site-chat');
+    if (!target) return res.status(404).json({ ok: false, error: 'not_found' });
+    if (target.status === 'pending') {
+      return res.status(400).json({ ok: false, error: 'still_pending' });
+    }
+
+    await updatePendingRow(target.sheetRowNumber, { status: 'hidden' });
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('/api/ask-hide エラー:', e);
+    res.status(500).json({ ok: false, error: 'internal_error' });
   }
 });
 
