@@ -395,6 +395,8 @@ async function appendPendingRow(entry) {
   await ensurePendingSheetExists();
   const sheets = await getSheets();
   const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  const now = new Date().toISOString();
+  const status = entry.status || 'pending';
   const row = [
     id,
     entry.question,
@@ -403,12 +405,12 @@ async function appendPendingRow(entry) {
     entry.roomId,
     entry.questionMessageId,
     entry.holderRequestMessageId,
-    'pending',
-    new Date().toISOString(),
+    status,
+    now,
     'no',
-    '',
-    '',
-    '',
+    entry.answer || '',
+    entry.answeredBy || '',
+    status === 'pending' ? '' : now,
   ];
   await sheets.spreadsheets.values.append({
     spreadsheetId: config.sheetId,
@@ -1504,8 +1506,8 @@ function buildChatPageHtml() {
 <script>
 (function () {
   var STORAGE_KEY = 'shpChatPassword';
-  var ROOMS_KEY = 'shpChatRooms';
-  var MAX_ROOMS = 100;
+  var READ_IDS_KEY = 'shpChatReadIds';
+  var HIDDEN_IDS_KEY = 'shpChatHiddenIds';
   var POLL_INTERVAL_MS = 20000;
   var passwordRequired = ${config.chatPagePassword ? 'true' : 'false'};
 
@@ -1536,21 +1538,54 @@ function buildChatPageHtml() {
     try { window.sessionStorage.removeItem(STORAGE_KEY); } catch (e) { /* 無視 */ }
   }
 
-  // 質問を送るたびに、1件1件を「部屋」としてこの人のブラウザ(localStorage)
-  // だけに記録する(公式LINEのトーク一覧のようなイメージ)。サーバー側やQ&A表
-  // には質問本文と回答以外は送らない。新しいものを先頭にして保存し、件数が
-  // 多くなりすぎないよう上限を設ける。
-  function loadRooms() {
+  // 質問一覧(部屋)は、誰が聞いた質問でも接客担当全員が同じものを見られるよう、
+  // サーバー側(保留シート)を正として毎回取得する。「既読」「このデバイスで
+  // 一覧から消した」という、人それぞれ違っていい情報だけを、この端末の
+  // localStorageに小さく保存しておく。
+  function loadIdList(key) {
     try {
-      var raw = window.localStorage.getItem(ROOMS_KEY);
-      return raw ? JSON.parse(raw) : [];
+      var raw = window.localStorage.getItem(key);
+      var arr = raw ? JSON.parse(raw) : [];
+      return Array.isArray(arr) ? arr : [];
     } catch (e) { return []; }
   }
-  function saveRooms(list) {
-    try { window.localStorage.setItem(ROOMS_KEY, JSON.stringify(list.slice(0, MAX_ROOMS))); } catch (e) { /* 無視 */ }
+  function saveIdList(key, list) {
+    try { window.localStorage.setItem(key, JSON.stringify(list.slice(-1000))); } catch (e) { /* 無視 */ }
   }
 
-  var rooms = loadRooms();
+  var readIds = loadIdList(READ_IDS_KEY);
+  var hiddenIds = loadIdList(HIDDEN_IDS_KEY);
+
+  function markRead(id) {
+    if (readIds.indexOf(id) !== -1) return;
+    readIds.push(id);
+    saveIdList(READ_IDS_KEY, readIds);
+  }
+  function markHidden(id) {
+    if (hiddenIds.indexOf(id) !== -1) return;
+    hiddenIds.push(id);
+    saveIdList(HIDDEN_IDS_KEY, hiddenIds);
+  }
+
+  // サーバーから取ってきた1件分のデータを、画面で使う「部屋」の形に変換する。
+  function roomFromServerItem(it) {
+    var messages = [{ who: 'user', text: it.question, at: it.askedAt }];
+    if (it.status === 'answered' && it.answer) {
+      messages.push({ who: 'bot', text: it.answer, at: it.answeredAt || it.askedAt });
+    }
+    return {
+      id: it.id,
+      question: it.question,
+      messages: messages,
+      status: it.status,
+      pendingId: it.status === 'pending' ? it.id : null,
+      unread: (it.status === 'answered' || it.status === 'cancelled') && readIds.indexOf(it.id) === -1,
+      askedAt: it.askedAt,
+      updatedAt: it.answeredAt || it.askedAt
+    };
+  }
+
+  var rooms = [];
   var activeRoomId = null;
 
   var roleSelectWrap = qs('roleSelect');
@@ -1763,7 +1798,7 @@ function buildChatPageHtml() {
     activeRoomId = id;
     if (room.unread) {
       room.unread = false;
-      saveRooms(rooms);
+      markRead(id);
     }
     renderRoomDetail(room);
     renderRoomList();
@@ -1803,6 +1838,7 @@ function buildChatPageHtml() {
     renderRoomList();
     renderRoomDetail(null);
     input.focus();
+    refreshRoomList();
   }
 
   function submitPassword() {
@@ -1841,11 +1877,12 @@ function buildChatPageHtml() {
     rolePromoterBtn.addEventListener('click', function () { window.location.href = '/promoter'; });
   }
 
-  // 1件の部屋(=1回の質問)を新規作成し、一覧の先頭に追加する。
+  // 1件の部屋(=1回の質問)を新規作成し、一覧の先頭に追加する。サーバーへの
+  // 送信が終わるまでの、この端末だけの一時的な表示用(IDはまだ仮のもの)。
   function createRoom(question) {
     var now = new Date().toISOString();
     var room = {
-      id: 'r_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
+      id: 'tmp_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
       question: question,
       messages: [],
       status: 'sending',
@@ -1855,18 +1892,15 @@ function buildChatPageHtml() {
       updatedAt: now
     };
     rooms.unshift(room);
-    if (rooms.length > MAX_ROOMS) rooms.length = MAX_ROOMS;
-    saveRooms(rooms);
     return room;
   }
 
-  // その部屋にメッセージを1件追加して保存する。いま画面に開いている部屋であれば、
+  // その部屋にメッセージを1件追加する。いま画面に開いている部屋であれば、
   // その場で吹き出しも追加する(highlightを立てると、新着が一瞬光って知らせる)。
   function addRoomMessage(room, who, text, highlight) {
     var at = new Date().toISOString();
     room.messages.push({ who: who, text: text, at: at });
     room.updatedAt = at;
-    saveRooms(rooms);
     if (activeRoomId === room.id) {
       var built = buildBubbleRow(who, text, at);
       if (highlight) {
@@ -1909,11 +1943,57 @@ function buildChatPageHtml() {
     if (row) row.remove();
   }
 
-  // 担当者確認中(pending)の部屋を、定期的に裏側で確認しにいき、回答が付いて
-  // いたら自動で反映する。いま開いている部屋なら吹き出しを一瞬ハイライトし、
-  // 開いていなければ一覧側を「未読」にする。どちらも画面上部に通知を出す。
-  function pollRoomOnce(room) {
-    fetch('/api/ask-status?id=' + encodeURIComponent(room.pendingId), {
+  // サーバー側(保留シート)の質問一覧を取りに行き、画面の部屋一覧にまとめ直す。
+  // 接客担当が何人いても、ここで取得した内容は全員共通(誰が聞いた質問も載る)。
+  // 定期的に呼び出すことで、他の人が聞いた質問や、届いた回答が自動で反映される。
+  function applyServerItems(items) {
+    var prevById = {};
+    rooms.forEach(function (r) { prevById[r.id] = r; });
+
+    var justResolved = [];
+    var merged = items
+      .filter(function (it) { return hiddenIds.indexOf(it.id) === -1; })
+      .map(function (it) {
+        var prev = prevById[it.id];
+        var room = roomFromServerItem(it);
+        if (activeRoomId === room.id) room.unread = false;
+        if (prev && prev.status === 'pending' && room.status !== 'pending') {
+          justResolved.push(room);
+        }
+        delete prevById[it.id];
+        return room;
+      });
+
+    // 送信した直後でまだサーバー一覧に出てきていない分(ごく一瞬だけ)は、
+    // そのまま先頭に残しておく。
+    var stillSending = Object.keys(prevById)
+      .map(function (id) { return prevById[id]; })
+      .filter(function (r) { return r.status === 'sending'; });
+
+    rooms = stillSending.concat(merged);
+    renderRoomList();
+
+    justResolved.forEach(function (room) {
+      if (activeRoomId === room.id) {
+        var card = qs('pendingStatusCard');
+        if (card) card.remove();
+        if (room.status === 'answered') {
+          var last = room.messages[room.messages.length - 1];
+          var built = buildBubbleRow('bot', last.text, last.at);
+          built.row.classList.add('bubble-highlight');
+          setTimeout(function () { built.row.classList.remove('bubble-highlight'); }, 2200);
+          chatBody.appendChild(built.row);
+          chatBody.scrollTop = chatBody.scrollHeight;
+        }
+      }
+      if (room.status === 'answered') {
+        showToast('回答が届きました：' + truncateText(room.question, 26));
+      }
+    });
+  }
+
+  function refreshRoomList() {
+    fetch('/api/ask-list', {
       headers: { 'x-chat-password': getStoredPassword() }
     })
       .then(function (res) {
@@ -1922,34 +2002,9 @@ function buildChatPageHtml() {
       })
       .then(function (data) {
         if (!data) return;
-        if (data.status === 'answered' && data.answer) {
-          room.status = 'answered';
-          room.pendingId = null;
-          var isActive = activeRoomId === room.id;
-          if (isActive) {
-            var card = qs('pendingStatusCard');
-            if (card) card.remove();
-          } else {
-            room.unread = true;
-          }
-          addRoomMessage(room, 'bot', data.answer, isActive);
-          showToast('回答が届きました：' + truncateText(room.question, 26));
-          renderRoomList();
-        } else if (data.status === 'cancelled' || data.status === 'not_found') {
-          room.status = 'cancelled';
-          room.pendingId = null;
-          saveRooms(rooms);
-          renderRoomList();
-          if (activeRoomId === room.id) renderRoomDetail(room);
-        }
+        applyServerItems(data.items || []);
       })
       .catch(function () { /* 通信エラー時は次回のポーリングに任せる */ });
-  }
-
-  function pollAllPending() {
-    rooms
-      .filter(function (r) { return r.status === 'pending' && r.pendingId; })
-      .forEach(pollRoomOnce);
   }
 
   // まだ回答が付いていない質問を取り消す。既に回答済みの場合はサーバー側で
@@ -1966,7 +2021,6 @@ function buildChatPageHtml() {
         if (data && data.ok) {
           room.status = 'cancelled';
           room.pendingId = null;
-          saveRooms(rooms);
           renderRoomList();
           if (activeRoomId === room.id) renderRoomDetail(room);
           showToast('質問を取り消しました。');
@@ -1979,15 +2033,16 @@ function buildChatPageHtml() {
       });
   }
 
-  // 回答済み・取消済みなど、もう動きのない過去の質問を一覧から消す。
-  // サーバー側には何もしない(表示用の履歴をこの端末から消すだけ)ので、
-  // 確認中の質問はここでは扱わない(その場合は上の「取消」を使う)。
+  // 回答済み・取消済みなど、もう動きのない過去の質問を一覧から消す。これは
+  // 質問一覧が接客担当全員で共有されているため、サーバー側のデータは消さず、
+  // 「この端末の画面には今後表示しない」という扱いにする(他の人の画面には
+  // 引き続き残る)。確認中の質問はここでは扱わない(その場合は上の「取消」を使う)。
   function deleteRoomLocal(room) {
-    if (!window.confirm('この質問を一覧から削除しますか？(この操作は取り消せません)')) return;
+    if (!window.confirm('この質問を一覧から削除しますか？(自分の画面からのみ消え、この操作は取り消せません)')) return;
+    markHidden(room.id);
     var idx = rooms.findIndex(function (r) { return r.id === room.id; });
     if (idx === -1) return;
     rooms.splice(idx, 1);
-    saveRooms(rooms);
     if (activeRoomId === room.id) {
       activeRoomId = null;
       renderRoomDetail(null);
@@ -2034,7 +2089,13 @@ function buildChatPageHtml() {
           : '只今エラーが発生しました。お手数ですが、時間をおいて再度お試しください。';
         var stillPending = !!(data && data.answered === false && data.pendingId);
         room.status = stillPending ? 'pending' : 'answered';
-        if (stillPending) room.pendingId = data.pendingId;
+        room.pendingId = stillPending ? data.pendingId : null;
+        // サーバーに記録された本当のIDに差し替える(他の人の画面にも、以後は
+        // このIDで同じ部屋として反映されるようにするため)。
+        if (data.id) {
+          if (activeRoomId === room.id) activeRoomId = data.id;
+          room.id = data.id;
+        }
         addRoomMessage(room, 'bot', text, false);
         if (stillPending) showPendingStatusCard(room);
         renderRoomList();
@@ -2042,7 +2103,6 @@ function buildChatPageHtml() {
       .catch(function () {
         removeTyping();
         room.status = 'answered';
-        saveRooms(rooms);
         addRoomMessage(room, 'bot', '通信エラーが発生しました。お手数ですが、時間をおいて再度お試しください。', false);
         renderRoomList();
       })
@@ -2062,9 +2122,10 @@ function buildChatPageHtml() {
     showRoleSelect();
   }
 
-  // ページを開いている間、保留中の質問がないか定期的に確認する。
-  setInterval(pollAllPending, POLL_INTERVAL_MS);
-  pollAllPending();
+  // ページを開いている間、質問一覧(他の人が聞いた分も含む)を定期的に
+  // 取りに行き、新着や回答の到着を反映する。
+  setInterval(refreshRoomList, POLL_INTERVAL_MS);
+  refreshRoomList();
 })();
 </script>
 </body>
@@ -2605,7 +2666,7 @@ function allowCors(req, res) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-chat-password, x-promoter-password');
 }
 
-['/api/ask-login', '/api/ask', '/api/ask-status', '/api/ask-delete', '/api/promoter-login', '/api/promoter-pending', '/api/promoter-answer', '/api/promoter-delete'].forEach(
+['/api/ask-login', '/api/ask', '/api/ask-list', '/api/ask-status', '/api/ask-delete', '/api/promoter-login', '/api/promoter-pending', '/api/promoter-answer', '/api/promoter-delete'].forEach(
   (path) => {
     app.options(path, (req, res) => {
       allowCors(req, res);
@@ -2654,6 +2715,28 @@ async function createSitePendingAndNotify(question) {
   return pendingId;
 }
 
+// FAQに即座にマッチして回答できた質問も、接客担当全員で共有する質問一覧
+// (/api/ask-list)に出てくるよう、answered状態のまま保留シートに記録しておく。
+// (Chatworkへの通知やプロモーターへの確認は不要なので、ここでは行わない)
+async function recordSiteAnswered(question, answer) {
+  try {
+    return await appendPendingRow({
+      question,
+      askerAccountId: '',
+      askerName: '接客担当(自社サイト)',
+      roomId: 'site-chat',
+      questionMessageId: '',
+      holderRequestMessageId: '',
+      status: 'answered',
+      answer,
+      answeredBy: '自動回答(FAQ)',
+    });
+  } catch (e) {
+    console.error('保留シートへの記録(即答分)に失敗しました:', e);
+    return null;
+  }
+}
+
 app.post('/api/ask', express.json(), async (req, res) => {
   allowCors(req, res);
   if (!checkChatPassword(req)) {
@@ -2667,7 +2750,8 @@ app.post('/api/ask', express.json(), async (req, res) => {
     let result = exactMatchQuestion(question, rows);
 
     if (result.matched && result.answer) {
-      return res.json({ answered: true, answer: result.answer });
+      const id = await recordSiteAnswered(question, result.answer);
+      return res.json({ answered: true, answer: result.answer, id });
     }
 
     // 1通の質問に複数の内容が混ざっている場合(「○○は?また、△△は?」等)、
@@ -2682,12 +2766,14 @@ app.post('/api/ask', express.json(), async (req, res) => {
           .join('\n');
         const leftover = formatLeftoverQuestions(unmatched).trim();
         if (!leftover) {
-          return res.json({ answered: true, answer: answerBody });
+          const id = await recordSiteAnswered(question, answerBody);
+          return res.json({ answered: true, answer: answerBody, id });
         }
         const pendingId = await createSitePendingAndNotify(leftover);
         return res.json({
           answered: false,
           pendingId,
+          id: pendingId,
           answer: `${answerBody}\n\nなお、上記以外のご質問につきましては、ただいま担当者に確認しております。少々お待ちください。`,
         });
       }
@@ -2710,7 +2796,8 @@ app.post('/api/ask', express.json(), async (req, res) => {
     }
 
     if (result.matched && result.answer) {
-      return res.json({ answered: true, answer: result.answer });
+      const id = await recordSiteAnswered(question, result.answer);
+      return res.json({ answered: true, answer: result.answer, id });
     }
 
     // Q&A表に答えが無い場合は、保留シートに記録したうえで、プロモーター用の
@@ -2720,11 +2807,40 @@ app.post('/api/ask', express.json(), async (req, res) => {
     return res.json({
       answered: false,
       pendingId,
+      id: pendingId,
       answer:
         '申し訳ございません。この内容については担当者の確認が必要です。\n\n確認でき次第、こちらに回答が届きます。少々お待ちください。',
     });
   } catch (e) {
     console.error('/api/ask エラー:', e);
+    res.status(500).json({ error: 'internal error' });
+  }
+});
+
+// 接客担当のページを開いた人全員が、同じ質問一覧(誰が聞いた質問か問わず全件)を
+// 見られるようにするための一覧取得API。即座に自動回答できた質問も、保留シートに
+// 記録されていれば(status='answered')ここに含まれる。
+app.get('/api/ask-list', async (req, res) => {
+  allowCors(req, res);
+  if (!checkChatPassword(req)) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  try {
+    const pending = await listPendingRows();
+    const items = pending
+      .filter((p) => p.roomId === 'site-chat')
+      .map((p) => ({
+        id: p.id,
+        question: p.question,
+        status: p.status,
+        answer: p.answer || '',
+        askedAt: p.requestedAt,
+        answeredAt: p.answeredAt || '',
+      }))
+      .reverse();
+    return res.json({ items });
+  } catch (e) {
+    console.error('/api/ask-list エラー:', e);
     res.status(500).json({ error: 'internal error' });
   }
 });
