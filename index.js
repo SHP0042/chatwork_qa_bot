@@ -2404,11 +2404,15 @@ function buildPromoterAdminHtml() {
             if (!data) return;
             if (data.ok) {
               loadPending();
+            } else if (data.error === 'not_found') {
+              note.className = 'q-error-note';
+              note.textContent = 'この質問はすでに対応済みか、削除されたようです。一覧を更新します。';
+              setTimeout(loadPending, 1200);
             } else {
               deleteBtn.disabled = false;
               btn.disabled = false;
               note.className = 'q-error-note';
-              note.textContent = 'エラーが発生しました。もう一度お試しください。';
+              note.textContent = 'サーバー側で問題が発生しました。少し時間をおいてもう一度お試しください。';
             }
           })
           .catch(function () {
@@ -2448,11 +2452,15 @@ function buildPromoterAdminHtml() {
               note.className = 'q-sent-note';
               note.textContent = '回答を送信しました。';
               setTimeout(loadPending, 600);
+            } else if (data.error === 'not_found') {
+              note.className = 'q-error-note';
+              note.textContent = 'この質問はすでに対応済みか、削除されたようです。一覧を更新します。';
+              setTimeout(loadPending, 1200);
             } else {
               btn.disabled = false;
               deleteBtn.disabled = false;
               note.className = 'q-error-note';
-              note.textContent = 'エラーが発生しました。もう一度お試しください。';
+              note.textContent = 'サーバー側で問題が発生しました。少し時間をおいてもう一度お試しください。';
             }
           })
           .catch(function () {
@@ -2783,7 +2791,7 @@ app.post('/api/promoter-answer', express.json(), async (req, res) => {
 
     const pending = await listPendingRows();
     const target = pending.find((p) => p.id === id && p.roomId === 'site-chat');
-    if (!target) return res.status(404).json({ ok: false, error: 'not found' });
+    if (!target) return res.status(404).json({ ok: false, error: 'not_found' });
 
     // 次回以降は自動回答できるよう、Q&A表にも登録しておく
     // (チャットワークのホルダー回答時と同じ扱い)。
@@ -2799,7 +2807,7 @@ app.post('/api/promoter-answer', express.json(), async (req, res) => {
     return res.json({ ok: true });
   } catch (e) {
     console.error('/api/promoter-answer エラー:', e);
-    res.status(500).json({ error: 'internal error' });
+    res.status(500).json({ ok: false, error: 'internal_error' });
   }
 });
 
@@ -2814,7 +2822,7 @@ app.post('/api/promoter-delete', express.json(), async (req, res) => {
 
     const pending = await listPendingRows();
     const target = pending.find((p) => p.id === id && p.roomId === 'site-chat');
-    if (!target) return res.status(404).json({ ok: false, error: 'not found' });
+    if (!target) return res.status(404).json({ ok: false, error: 'not_found' });
 
     // Q&A表への登録は行わず、保留シート上のこの質問を「対応不要」として
     // 取り消し扱いにする(接客担当側では、質問者が開いたままの場合に
@@ -2828,7 +2836,7 @@ app.post('/api/promoter-delete', express.json(), async (req, res) => {
     return res.json({ ok: true });
   } catch (e) {
     console.error('/api/promoter-delete エラー:', e);
-    res.status(500).json({ error: 'internal error' });
+    res.status(500).json({ ok: false, error: 'internal_error' });
   }
 });
 
