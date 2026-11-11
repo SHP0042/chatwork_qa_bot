@@ -1079,11 +1079,11 @@ function buildChatPageHtml() {
     background: radial-gradient(ellipse 900px 500px at 50% 0%, #f3f8ff 0%, var(--bg) 70%);
     color: var(--text);
   }
-  .app { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+  .app { display: flex; flex-direction: column; height: 100vh; height: 100dvh; overflow: hidden; }
   .top-bar {
     background: linear-gradient(135deg, var(--brand), var(--brand-dark));
     color: #fff;
-    padding: 28px 24px;
+    padding: 22px 24px;
     text-align: center;
     box-shadow: 0 4px 20px rgba(0,40,80,0.18);
     position: relative;
@@ -1098,12 +1098,12 @@ function buildChatPageHtml() {
     pointer-events: none;
   }
   .header-text { text-align: left; }
-  .top-bar .title { font-size: 26px; font-weight: 800; letter-spacing: 0.3px; text-shadow: 0 1px 4px rgba(0,30,60,0.28); line-height: 1.3; }
+  .top-bar .title { font-size: 21px; font-weight: 800; letter-spacing: 0.2px; text-shadow: 0 1px 4px rgba(0,30,60,0.28); line-height: 1.3; }
   .top-bar .subtitle-row {
     display: inline-flex;
     align-items: flex-start;
-    gap: 8px;
-    margin-top: 9px;
+    gap: 7px;
+    margin-top: 8px;
     background: rgba(255,255,255,0.18);
     border: 1px solid rgba(255,255,255,0.22);
     border-radius: 14px;
@@ -1111,9 +1111,9 @@ function buildChatPageHtml() {
     max-width: 100%;
   }
   .top-bar .subtitle-row .status-dot { margin-top: 5px; }
-  .top-bar .subtitle { font-size: 13.5px; opacity: 0.97; font-weight: 600; line-height: 1.5; text-align: left; }
-  .top-bar-inner { display: flex; align-items: center; justify-content: center; gap: 20px; position: relative; z-index: 1; }
-  .brand-logo { width: 84px; height: 84px; border-radius: 50%; flex-shrink: 0; border: 3px solid rgba(255,255,255,0.85); box-shadow: 0 4px 14px rgba(0,0,0,0.25); }
+  .top-bar .subtitle { font-size: 12.5px; opacity: 0.97; font-weight: 600; line-height: 1.5; text-align: left; }
+  .top-bar-inner { display: flex; align-items: center; justify-content: center; gap: 16px; position: relative; z-index: 1; }
+  .brand-logo { width: 64px; height: 64px; border-radius: 50%; flex-shrink: 0; border: 3px solid rgba(255,255,255,0.85); box-shadow: 0 4px 14px rgba(0,0,0,0.25); }
   .status-dot {
     width: 7px;
     height: 7px;
@@ -2297,7 +2297,7 @@ function buildPromoterAdminHtml() {
   .top-bar {
     background: linear-gradient(135deg, var(--brand), var(--brand-dark));
     color: #fff;
-    padding: 28px 24px;
+    padding: 22px 24px;
     text-align: center;
     box-shadow: 0 4px 20px rgba(0,40,80,0.18);
     position: relative;
@@ -2312,12 +2312,12 @@ function buildPromoterAdminHtml() {
     pointer-events: none;
   }
   .header-text { text-align: left; }
-  .top-bar .title { font-size: 26px; font-weight: 800; letter-spacing: 0.3px; text-shadow: 0 1px 4px rgba(0,30,60,0.28); line-height: 1.3; }
+  .top-bar .title { font-size: 21px; font-weight: 800; letter-spacing: 0.2px; text-shadow: 0 1px 4px rgba(0,30,60,0.28); line-height: 1.3; }
   .top-bar .subtitle-row {
     display: inline-flex;
     align-items: flex-start;
-    gap: 8px;
-    margin-top: 9px;
+    gap: 7px;
+    margin-top: 8px;
     background: rgba(255,255,255,0.18);
     border: 1px solid rgba(255,255,255,0.22);
     border-radius: 14px;
@@ -2325,9 +2325,9 @@ function buildPromoterAdminHtml() {
     max-width: 100%;
   }
   .top-bar .subtitle-row .status-dot { margin-top: 5px; }
-  .top-bar .subtitle { font-size: 13.5px; opacity: 0.97; font-weight: 600; line-height: 1.5; text-align: left; }
-  .top-bar-inner { display: flex; align-items: center; justify-content: center; gap: 20px; position: relative; z-index: 1; }
-  .brand-logo { width: 84px; height: 84px; border-radius: 50%; flex-shrink: 0; border: 3px solid rgba(255,255,255,0.85); box-shadow: 0 4px 14px rgba(0,0,0,0.25); }
+  .top-bar .subtitle { font-size: 12.5px; opacity: 0.97; font-weight: 600; line-height: 1.5; text-align: left; }
+  .top-bar-inner { display: flex; align-items: center; justify-content: center; gap: 16px; position: relative; z-index: 1; }
+  .brand-logo { width: 64px; height: 64px; border-radius: 50%; flex-shrink: 0; border: 3px solid rgba(255,255,255,0.85); box-shadow: 0 4px 14px rgba(0,0,0,0.25); }
   .status-dot {
     width: 7px;
     height: 7px;
