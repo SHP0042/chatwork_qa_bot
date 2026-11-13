@@ -77,6 +77,10 @@ const config = {
 
   // 接客担当スタッフの名前とChatworkアカウントIDの一覧を保存するシート。
   staffSheetName: process.env.STAFF_SHEET_NAME || 'Bot_Staff',
+
+  // プロモーター(回答者)の名前とChatworkアカウントIDの一覧を保存するシート。
+  // 接客担当の一覧(Bot_Staff)とは別で管理する。
+  promoterStaffSheetName: process.env.PROMOTER_STAFF_SHEET_NAME || 'Bot_PromoterStaff',
 };
 
 function assertConfig() {
@@ -730,6 +734,101 @@ async function removeStaffMember(accountId) {
 }
 
 // ============================================================
+// プロモーター(回答者)の一覧(回答管理ページで名前を選んでもらい、新着の質問を
+// その人たちにTOを付けて知らせるために使う)。接客担当の一覧(Bot_Staff)とは
+// 完全に別のシート・別の候補になる。サイト内から追加・削除できる。
+// ============================================================
+const PROMOTER_STAFF_HEADERS = ['名前', 'ChatworkアカウントID'];
+
+async function ensurePromoterStaffSheetExists() {
+  const title = config.promoterStaffSheetName;
+  const sheets = await getSheets();
+  const exists = await sheetTabExists(title);
+  if (!exists) {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: config.sheetId,
+      requestBody: { requests: [{ addSheet: { properties: { title } } }] },
+    });
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: config.sheetId,
+      range: `${title}!A1`,
+      valueInputOption: 'RAW',
+      requestBody: { values: [PROMOTER_STAFF_HEADERS] },
+    });
+  }
+}
+
+async function listPromoterStaffMembers() {
+  await ensurePromoterStaffSheetExists();
+  const sheets = await getSheets();
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: config.sheetId,
+    range: `${config.promoterStaffSheetName}`,
+  });
+  const values = res.data.values || [];
+  const rows = [];
+  for (let i = 1; i < values.length; i++) {
+    const r = values[i];
+    if (!r[1]) continue; // アカウントIDが無い行は無視
+    rows.push({
+      sheetRowNumber: i + 1,
+      name: r[0] || '',
+      accountId: String(r[1]).trim(),
+    });
+  }
+  return rows;
+}
+
+// 同じアカウントIDが既にあれば名前だけ更新し、無ければ新しい行を追加する。
+async function upsertPromoterStaffMember(name, accountId) {
+  await ensurePromoterStaffSheetExists();
+  const sheets = await getSheets();
+  const existing = await listPromoterStaffMembers();
+  const match = existing.find((r) => r.accountId === accountId);
+  if (match) {
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: config.sheetId,
+      range: `${config.promoterStaffSheetName}!A${match.sheetRowNumber}`,
+      valueInputOption: 'USER_ENTERED',
+      requestBody: { values: [[name]] },
+    });
+    return;
+  }
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: config.sheetId,
+    range: `${config.promoterStaffSheetName}`,
+    valueInputOption: 'USER_ENTERED',
+    insertDataOption: 'INSERT_ROWS',
+    requestBody: { values: [[name, accountId]] },
+  });
+}
+
+async function removePromoterStaffMember(accountId) {
+  const sheets = await getSheets();
+  const existing = await listPromoterStaffMembers();
+  const match = existing.find((r) => r.accountId === accountId);
+  if (!match) return;
+  const tabs = await listAllSheetTabs();
+  const tab = tabs.find((t) => t.title === config.promoterStaffSheetName);
+  if (!tab) return;
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: config.sheetId,
+    requestBody: {
+      requests: [{
+        deleteDimension: {
+          range: {
+            sheetId: Number(tab.gid),
+            dimension: 'ROWS',
+            startIndex: match.sheetRowNumber - 1,
+            endIndex: match.sheetRowNumber,
+          },
+        },
+      }],
+    },
+  });
+}
+
+// ============================================================
 // llm
 // ============================================================
 let geminiClient = null;
@@ -1230,9 +1329,9 @@ async function runFollowupCheck({ log = console.log } = {}) {
     // (返信を待つのではなく)既存ルームへの軽い催促通知だけを送る。
     if (p.roomId === 'site-chat') {
       try {
-        // こちらも固定の環境変数ではなく、サイト内の「担当者」一覧(Bot_Staff)
-        // 全員にTOを付けて催促する。
-        const staffMembers = await listStaffMembers();
+        // こちらも固定の環境変数ではなく、サイト内の「プロモーター」一覧
+        // (Bot_PromoterStaff)全員にTOを付けて催促する。
+        const staffMembers = await listPromoterStaffMembers();
         const mentions = staffMembers.map((s) => mentionTag(s.accountId, s.name)).join(' ');
         const mentionPrefix = mentions ? `${mentions}\n` : '';
         await sendMessage(
@@ -1303,12 +1402,6 @@ function checkPromoterPassword(req) {
   if (!config.promoterPagePassword) return true;
   const provided = req.headers[PROMOTER_PASSWORD_HEADER] || (req.body && req.body.password) || '';
   return provided === config.promoterPagePassword;
-}
-
-// 担当者一覧(Bot_Staff)は接客担当ページ・プロモーターページの両方から
-// 追加・削除・閲覧できるようにするため、どちらのパスワードでも通す。
-function checkChatOrPromoterPassword(req) {
-  return checkChatPassword(req) || checkPromoterPassword(req);
 }
 
 function buildChatPageHtml() {
@@ -3588,7 +3681,9 @@ function buildPromoterAdminHtml() {
     }, true);
   })();
   var STORAGE_KEY = 'shpPromoterPassword';
-  var STAFF_KEY = 'shpStaffIdentity';
+  // 接客担当ページの担当者一覧(shpStaffIdentity)とは別の、プロモーター専用の
+  // 一覧・選択状態を使うため、保存先のキーも別にしておく。
+  var STAFF_KEY = 'shpPromoterStaffIdentity';
   var REFRESH_INTERVAL_MS = 20000;
   var passwordRequired = ${config.promoterPagePassword ? 'true' : 'false'};
 
@@ -3723,7 +3818,7 @@ function buildPromoterAdminHtml() {
   }
 
   function fetchStaffList() {
-    return fetch('/api/staff-list', {
+    return fetch('/api/promoter-staff-list', {
       headers: { 'x-promoter-password': getStoredPassword() }
     })
       .then(function (res) { return res.json(); })
@@ -3815,7 +3910,7 @@ function buildPromoterAdminHtml() {
       }
       if (staffGateError) staffGateError.textContent = '';
       staffAddBtn.disabled = true;
-      fetch('/api/staff-add', {
+      fetch('/api/promoter-staff-add', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-promoter-password': getStoredPassword() },
         body: JSON.stringify({ name: name, accountId: accountId })
@@ -3850,7 +3945,7 @@ function buildPromoterAdminHtml() {
       if (!accountId) return;
       if (!window.confirm('この担当者を削除しますか？')) return;
       btn.disabled = true;
-      fetch('/api/staff-delete', {
+      fetch('/api/promoter-staff-delete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-promoter-password': getStoredPassword() },
         body: JSON.stringify({ accountId: accountId })
@@ -4203,7 +4298,7 @@ function allowCors(req, res) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-chat-password, x-promoter-password');
 }
 
-['/api/ask-login', '/api/ask', '/api/ask-list', '/api/ask-status', '/api/ask-delete', '/api/ask-hide', '/api/promoter-login', '/api/promoter-pending', '/api/promoter-answer', '/api/promoter-delete', '/api/push-subscribe', '/api/staff-list', '/api/staff-add', '/api/staff-delete'].forEach(
+['/api/ask-login', '/api/ask', '/api/ask-list', '/api/ask-status', '/api/ask-delete', '/api/ask-hide', '/api/promoter-login', '/api/promoter-pending', '/api/promoter-answer', '/api/promoter-delete', '/api/push-subscribe', '/api/staff-list', '/api/staff-add', '/api/staff-delete', '/api/promoter-staff-list', '/api/promoter-staff-add', '/api/promoter-staff-delete'].forEach(
   (path) => {
     app.options(path, (req, res) => {
       allowCors(req, res);
@@ -4275,9 +4370,9 @@ async function createSitePendingAndNotify(question, staff = null) {
   // 平常営業日になれば次の催促チェックで通知される)。
   if (isBusinessDay(new Date())) {
     try {
-      // 固定の環境変数(HOLDER_ACCOUNT_IDS)ではなく、サイト内の「担当者」一覧
-      // (Bot_Staff、追加・削除した人)全員にTOを付けて知らせる。
-      const staffMembers = await listStaffMembers();
+      // 固定の環境変数(HOLDER_ACCOUNT_IDS)ではなく、サイト内の「プロモーター」一覧
+      // (Bot_PromoterStaff、追加・削除した人)全員にTOを付けて知らせる。
+      const staffMembers = await listPromoterStaffMembers();
       const mentions = staffMembers.map((s) => mentionTag(s.accountId, s.name)).join(' ');
       const mentionPrefix = mentions ? `${mentions}\n` : '';
       await sendMessage(
@@ -4513,7 +4608,7 @@ app.post('/api/ask-hide', express.json(), async (req, res) => {
 // 質問受付ページで名前を選ぶための一覧。
 app.get('/api/staff-list', async (req, res) => {
   allowCors(req, res);
-  if (!checkChatOrPromoterPassword(req)) {
+  if (!checkChatPassword(req)) {
     return res.status(401).json({ error: 'unauthorized' });
   }
   try {
@@ -4527,7 +4622,7 @@ app.get('/api/staff-list', async (req, res) => {
 
 app.post('/api/staff-add', express.json(), async (req, res) => {
   allowCors(req, res);
-  if (!checkChatOrPromoterPassword(req)) {
+  if (!checkChatPassword(req)) {
     return res.status(401).json({ error: 'unauthorized' });
   }
   try {
@@ -4547,7 +4642,7 @@ app.post('/api/staff-add', express.json(), async (req, res) => {
 
 app.post('/api/staff-delete', express.json(), async (req, res) => {
   allowCors(req, res);
-  if (!checkChatOrPromoterPassword(req)) {
+  if (!checkChatPassword(req)) {
     return res.status(401).json({ error: 'unauthorized' });
   }
   try {
@@ -4557,6 +4652,58 @@ app.post('/api/staff-delete', express.json(), async (req, res) => {
     return res.json({ ok: true });
   } catch (e) {
     console.error('/api/staff-delete エラー:', e);
+    res.status(500).json({ ok: false, error: 'internal_error' });
+  }
+});
+
+// プロモーター(回答者)側の担当者一覧。接客担当側(/api/staff-*)とは別の
+// シート(Bot_PromoterStaff)を使う。
+app.get('/api/promoter-staff-list', async (req, res) => {
+  allowCors(req, res);
+  if (!checkPromoterPassword(req)) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  try {
+    const staff = await listPromoterStaffMembers();
+    return res.json({ items: staff.map((s) => ({ name: s.name, accountId: s.accountId })) });
+  } catch (e) {
+    console.error('/api/promoter-staff-list エラー:', e);
+    res.status(500).json({ error: 'internal error' });
+  }
+});
+
+app.post('/api/promoter-staff-add', express.json(), async (req, res) => {
+  allowCors(req, res);
+  if (!checkPromoterPassword(req)) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  try {
+    const name = ((req.body && req.body.name) || '').trim();
+    const accountId = ((req.body && req.body.accountId) || '').trim();
+    if (!name || !accountId) return res.status(400).json({ error: 'name and accountId are required' });
+    if (!/^[0-9]+$/.test(accountId)) {
+      return res.status(400).json({ error: 'accountId must be numeric' });
+    }
+    await upsertPromoterStaffMember(name, accountId);
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('/api/promoter-staff-add エラー:', e);
+    res.status(500).json({ ok: false, error: 'internal_error' });
+  }
+});
+
+app.post('/api/promoter-staff-delete', express.json(), async (req, res) => {
+  allowCors(req, res);
+  if (!checkPromoterPassword(req)) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  try {
+    const accountId = ((req.body && req.body.accountId) || '').trim();
+    if (!accountId) return res.status(400).json({ error: 'accountId is required' });
+    await removePromoterStaffMember(accountId);
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('/api/promoter-staff-delete エラー:', e);
     res.status(500).json({ ok: false, error: 'internal_error' });
   }
 });
