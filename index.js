@@ -1230,9 +1230,13 @@ async function runFollowupCheck({ log = console.log } = {}) {
     // (返信を待つのではなく)既存ルームへの軽い催促通知だけを送る。
     if (p.roomId === 'site-chat') {
       try {
-        const mentions = config.holderAccountIds.map((id) => mentionTag(id)).join(' ');
+        // こちらも固定の環境変数ではなく、サイト内の「担当者」一覧(Bot_Staff)
+        // 全員にTOを付けて催促する。
+        const staffMembers = await listStaffMembers();
+        const mentions = staffMembers.map((s) => mentionTag(s.accountId, s.name)).join(' ');
+        const mentionPrefix = mentions ? `${mentions}\n` : '';
         await sendMessage(
-          `${mentions}\n`
+          mentionPrefix
           + `サイト内に未回答の質問が届いています。\n\n`
           + `【質問】\n${p.question}\n\n`
           + `▼回答はこちらから\nhttps://shp-company.site/qa_bot/promoter/`
@@ -1299,6 +1303,12 @@ function checkPromoterPassword(req) {
   if (!config.promoterPagePassword) return true;
   const provided = req.headers[PROMOTER_PASSWORD_HEADER] || (req.body && req.body.password) || '';
   return provided === config.promoterPagePassword;
+}
+
+// 担当者一覧(Bot_Staff)は接客担当ページ・プロモーターページの両方から
+// 追加・削除・閲覧できるようにするため、どちらのパスワードでも通す。
+function checkChatOrPromoterPassword(req) {
+  return checkChatPassword(req) || checkPromoterPassword(req);
 }
 
 function buildChatPageHtml() {
@@ -3372,6 +3382,100 @@ function buildPromoterAdminHtml() {
     60%  { transform: translate(calc(var(--dx,0px) * 0.6), calc(var(--dy,0px) * 0.6)) scale(var(--ds,1)) rotate(calc(var(--rot,70deg) * 0.65)); opacity: 1; }
     100% { transform: translate(var(--dx,0px),var(--dy,0px)) scale(calc(var(--ds,1) * 0.2)) rotate(var(--rot,70deg)); opacity: 0; }
   }
+  .staff-indicator-btn {
+    border: none;
+    background: rgba(255,255,255,0.22);
+    color: #fff;
+    font-size: 10.5px;
+    font-weight: 700;
+    border-radius: 8px;
+    padding: 6px 9px;
+    cursor: pointer;
+    font-family: inherit;
+    white-space: nowrap;
+    transition: transform 0.1s ease, background 0.2s ease;
+    flex-shrink: 0;
+  }
+  .staff-indicator-btn:hover { background: rgba(255,255,255,0.32); transform: scale(1.03); }
+  .staff-indicator-btn:active { transform: scale(0.96); }
+
+  .gate-card select {
+    width: 100%;
+    padding: 11px 14px;
+    border: 1px solid #dfe2ec;
+    border-radius: 10px;
+    font-size: 16px;
+    margin-bottom: 12px;
+    font-family: inherit;
+    background: #fff;
+    color: var(--text);
+  }
+  .staff-gate-card { max-width: 400px; }
+  #staffPickSection { margin-bottom: 4px; }
+  /* 「.gate-card button」より詳しいセレクタにして、ボタンの共通スタイル(幅100%の
+     青いボタン)に上書きされて見た目が崩れないようにする。 */
+  .gate-card .staff-manage-link {
+    display: block;
+    width: auto;
+    margin: 10px auto 0;
+    padding: 4px;
+    font-size: 12.5px;
+    font-weight: 500;
+    color: var(--muted);
+    text-decoration: underline;
+    text-align: center;
+    cursor: pointer;
+    background: none;
+    border: none;
+    font-family: inherit;
+  }
+  .staff-manage-box {
+    display: none;
+    text-align: left;
+    border-top: 1px solid #eef1f6;
+    margin-top: 14px;
+    padding-top: 16px;
+  }
+  .staff-manage-box.open { display: block; }
+  .staff-manage-box h4 { font-size: 13px; margin: 0 0 10px; color: var(--text); }
+  .staff-manage-list { list-style: none; margin: 0 0 16px; padding: 0; max-height: 160px; overflow-y: auto; }
+  .staff-manage-list li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 0;
+    border-bottom: 1px solid #f3f4f8;
+    font-size: 13px;
+  }
+  .staff-manage-list li span { overflow-wrap: anywhere; }
+  .staff-manage-list li .staff-del-btn {
+    border: none;
+    background: #fdecea;
+    color: #d1403a;
+    font-size: 11px;
+    font-weight: 700;
+    border-radius: 7px;
+    padding: 5px 9px;
+    cursor: pointer;
+    font-family: inherit;
+    width: auto;
+    flex-shrink: 0;
+  }
+  .staff-manage-empty { font-size: 13px; color: var(--muted); margin: 0 0 16px; line-height: 1.6; }
+  .staff-add-row { display: flex; flex-direction: column; gap: 10px; margin-bottom: 8px; }
+  .staff-add-row input {
+    width: 100%;
+    padding: 11px 14px;
+    border: 1px solid #dfe2ec;
+    border-radius: 10px;
+    font-size: 15px;
+    font-family: inherit;
+    margin-bottom: 0;
+  }
+  .gate-card .staff-add-btn { margin-top: 2px; }
+  .staff-add-hint { font-size: 11.5px; color: var(--muted); margin: 6px 0 0; line-height: 1.5; }
+  .staff-gate-error { color: #d1403a; font-size: 12.5px; margin-top: 8px; min-height: 16px; }
 </style>
 </head>
 <body>
@@ -3383,6 +3487,7 @@ function buildPromoterAdminHtml() {
         <div class="title">SHP 回答管理</div>
         <div class="subtitle-row"><span class="status-dot"></span><span class="subtitle">プロモーター専用（未回答の質問に答える画面）</span></div>
       </div>
+      <button type="button" id="staffIndicatorBtn" class="staff-indicator-btn" style="display:none;"></button>
     </div>
   </div>
 
@@ -3393,6 +3498,30 @@ function buildPromoterAdminHtml() {
       <button id="gate-submit">開く</button>
       <div class="gate-error" id="gate-error"></div>
       <div class="gate-switch"><a href="/chat">接客担当の方はこちら</a></div>
+    </div>
+  </div>
+
+  <div id="staffGate" class="gate-wrap" style="display:none;">
+    <div class="gate-card staff-gate-card">
+      <div id="staffPickSection">
+        <h2>あなたのお名前を選択してください</h2>
+        <select id="staffSelect"></select>
+        <button id="staffSelectConfirm">この名前で始める</button>
+      </div>
+      <div class="staff-manage-empty" id="staffEmptyMsg" style="display:none;">まだ担当者が登録されていません。<br>下のフォームから最初の担当者を登録してください。</div>
+      <div class="staff-gate-error" id="staffGateError"></div>
+
+      <button type="button" class="staff-manage-link" id="staffManageToggle">担当者の追加・削除</button>
+      <div class="staff-manage-box" id="staffManageBox">
+        <h4>登録されている担当者</h4>
+        <ul class="staff-manage-list" id="staffManageList"></ul>
+        <div class="staff-add-row">
+          <input type="text" id="staffNewName" placeholder="名前" />
+          <input type="text" id="staffNewAccountId" placeholder="ChatworkアカウントID(数字)" inputmode="numeric" />
+          <button type="button" class="staff-add-btn" id="staffAddBtn">この内容で追加する</button>
+        </div>
+        <div class="staff-add-hint">ChatworkアカウントIDは、Chatworkのプロフィール画面に出ている数字のIDです。</div>
+      </div>
     </div>
   </div>
 
@@ -3459,6 +3588,7 @@ function buildPromoterAdminHtml() {
     }, true);
   })();
   var STORAGE_KEY = 'shpPromoterPassword';
+  var STAFF_KEY = 'shpStaffIdentity';
   var REFRESH_INTERVAL_MS = 20000;
   var passwordRequired = ${config.promoterPagePassword ? 'true' : 'false'};
 
@@ -3474,11 +3604,43 @@ function buildPromoterAdminHtml() {
     try { window.sessionStorage.removeItem(STORAGE_KEY); } catch (e) { /* 無視 */ }
   }
 
+  // この端末で選んだ担当者(名前・ChatworkアカウントID)は、毎回選び直さなくて
+  // 済むよう、この端末のlocalStorageに覚えておく。接客担当ページと同じ場所
+  // (同じキー)に保存するため、同じ端末であれば両方のページで共有される。
+  function getStoredStaff() {
+    try {
+      var raw = window.localStorage.getItem(STAFF_KEY);
+      if (!raw) return null;
+      var obj = JSON.parse(raw);
+      if (obj && obj.accountId) return obj;
+      return null;
+    } catch (e) { return null; }
+  }
+  function setStoredStaff(staff) {
+    try { window.localStorage.setItem(STAFF_KEY, JSON.stringify(staff)); } catch (e) { /* 無視 */ }
+  }
+  function clearStoredStaff() {
+    try { window.localStorage.removeItem(STAFF_KEY); } catch (e) { /* 無視 */ }
+  }
+
   var gateWrap = qs('gate');
   var adminWrap = qs('adminWrap');
   var gateSubmit = qs('gate-submit');
   var gatePassword = qs('gate-password');
   var gateError = qs('gate-error');
+  var staffIndicatorBtn = qs('staffIndicatorBtn');
+  var staffGateWrap = qs('staffGate');
+  var staffPickSection = qs('staffPickSection');
+  var staffSelect = qs('staffSelect');
+  var staffEmptyMsg = qs('staffEmptyMsg');
+  var staffSelectConfirm = qs('staffSelectConfirm');
+  var staffGateError = qs('staffGateError');
+  var staffManageToggle = qs('staffManageToggle');
+  var staffManageBox = qs('staffManageBox');
+  var staffManageList = qs('staffManageList');
+  var staffNewName = qs('staffNewName');
+  var staffNewAccountId = qs('staffNewAccountId');
+  var staffAddBtn = qs('staffAddBtn');
   var listBody = qs('listBody');
   var pendingCount = qs('pendingCount');
   var refreshButton = qs('refreshButton');
@@ -3488,17 +3650,227 @@ function buildPromoterAdminHtml() {
     clearStoredPassword();
     if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
     gateWrap.style.display = 'flex';
+    staffGateWrap.style.display = 'none';
     adminWrap.style.display = 'none';
     gateError.textContent = message || '';
   }
 
-  function showAdmin() {
+  function enterAdminForReal() {
     gateWrap.style.display = 'none';
+    staffGateWrap.style.display = 'none';
     adminWrap.style.display = 'flex';
     loadPending();
     if (!refreshTimer) {
       refreshTimer = setInterval(loadPending, REFRESH_INTERVAL_MS);
     }
+  }
+
+  // ===== 担当者(名前)の選択 =====
+  // 誰が回答したかを記録・通知できるよう、ログイン後に名前を一度選んでもらい、
+  // この端末に覚えておく。担当者の追加・削除もこの画面から行える。
+  // (接客担当ページと同じ一覧・同じAPIを使う。)
+  function renderStaffIndicator(staff) {
+    if (!staffIndicatorBtn) return;
+    if (staff && staff.name) {
+      staffIndicatorBtn.style.display = 'inline-flex';
+      staffIndicatorBtn.textContent = '👤 ' + staff.name;
+    } else {
+      staffIndicatorBtn.style.display = 'none';
+      staffIndicatorBtn.textContent = '';
+    }
+  }
+
+  function populateStaffSelect(list) {
+    var hasStaff = !!(list && list.length > 0);
+
+    if (staffPickSection) staffPickSection.style.display = hasStaff ? 'block' : 'none';
+    if (staffEmptyMsg) staffEmptyMsg.style.display = hasStaff ? 'none' : 'block';
+    if (staffManageToggle) staffManageToggle.style.display = hasStaff ? 'block' : 'none';
+    if (staffManageBox && !hasStaff) staffManageBox.classList.add('open');
+
+    if (!staffSelect) return;
+    staffSelect.innerHTML = '';
+    if (!hasStaff) return;
+    list.forEach(function (s) {
+      var opt = document.createElement('option');
+      opt.value = s.accountId;
+      opt.textContent = s.name;
+      staffSelect.appendChild(opt);
+    });
+    var stored = getStoredStaff();
+    if (stored && list.some(function (s) { return s.accountId === stored.accountId; })) {
+      staffSelect.value = stored.accountId;
+    }
+  }
+
+  function populateStaffManageList(list) {
+    if (!staffManageList) return;
+    staffManageList.innerHTML = '';
+    if (!list || list.length === 0) return;
+    list.forEach(function (s) {
+      var li = document.createElement('li');
+      var nameSpan = document.createElement('span');
+      nameSpan.textContent = s.name + '(ID:' + s.accountId + ')';
+      var delBtn = document.createElement('button');
+      delBtn.type = 'button';
+      delBtn.className = 'staff-del-btn';
+      delBtn.textContent = '削除';
+      delBtn.setAttribute('data-account-id', s.accountId);
+      li.appendChild(nameSpan);
+      li.appendChild(delBtn);
+      staffManageList.appendChild(li);
+    });
+  }
+
+  function fetchStaffList() {
+    return fetch('/api/staff-list', {
+      headers: { 'x-promoter-password': getStoredPassword() }
+    })
+      .then(function (res) { return res.json(); })
+      .then(function (data) { return (data && data.items) || []; });
+  }
+
+  function showStaffGate() {
+    gateWrap.style.display = 'none';
+    adminWrap.style.display = 'none';
+    staffGateWrap.style.display = 'flex';
+    if (staffGateError) staffGateError.textContent = '';
+    fetchStaffList()
+      .then(function (list) {
+        populateStaffSelect(list);
+        populateStaffManageList(list);
+      })
+      .catch(function () {
+        if (staffGateError) staffGateError.textContent = '担当者一覧の取得に失敗しました。もう一度お試しください。';
+      });
+  }
+
+  // パスワードでのログインが済んだあと、この端末に覚えている担当者が
+  // まだ(削除などで)有効かどうかを確認してから、回答管理画面に進む。
+  function ensureStaffIdentityThenEnterAdmin() {
+    var stored = getStoredStaff();
+    fetchStaffList()
+      .then(function (list) {
+        if (stored && list.some(function (s) { return s.accountId === stored.accountId; })) {
+          renderStaffIndicator(stored);
+          enterAdminForReal();
+        } else {
+          clearStoredStaff();
+          renderStaffIndicator(null);
+          populateStaffSelect(list);
+          populateStaffManageList(list);
+          gateWrap.style.display = 'none';
+          adminWrap.style.display = 'none';
+          staffGateWrap.style.display = 'flex';
+          if (staffGateError) staffGateError.textContent = '';
+        }
+      })
+      .catch(function () {
+        // 担当者一覧が取れなくても、回答自体はできるようにしておく。
+        enterAdminForReal();
+      });
+  }
+
+  function showAdmin() {
+    gateWrap.style.display = 'none';
+    adminWrap.style.display = 'none';
+    ensureStaffIdentityThenEnterAdmin();
+  }
+
+  if (staffSelectConfirm) {
+    staffSelectConfirm.addEventListener('click', function () {
+      if (!staffSelect || !staffSelect.value) {
+        if (staffGateError) staffGateError.textContent = '名前を選択してください。';
+        return;
+      }
+      var selectedOpt = staffSelect.options[staffSelect.selectedIndex];
+      var staff = { accountId: staffSelect.value, name: selectedOpt ? selectedOpt.textContent : '' };
+      setStoredStaff(staff);
+      renderStaffIndicator(staff);
+      enterAdminForReal();
+    });
+  }
+
+  if (staffIndicatorBtn) {
+    staffIndicatorBtn.addEventListener('click', showStaffGate);
+  }
+
+  if (staffManageToggle) {
+    staffManageToggle.addEventListener('click', function () {
+      if (staffManageBox) staffManageBox.classList.toggle('open');
+    });
+  }
+
+  if (staffAddBtn) {
+    staffAddBtn.addEventListener('click', function () {
+      var name = (staffNewName && staffNewName.value || '').trim();
+      var accountId = (staffNewAccountId && staffNewAccountId.value || '').trim();
+      if (!name || !accountId) {
+        if (staffGateError) staffGateError.textContent = '名前とChatworkアカウントIDの両方を入力してください。';
+        return;
+      }
+      if (!/^[0-9]+$/.test(accountId)) {
+        if (staffGateError) staffGateError.textContent = 'ChatworkアカウントIDは数字で入力してください。';
+        return;
+      }
+      if (staffGateError) staffGateError.textContent = '';
+      staffAddBtn.disabled = true;
+      fetch('/api/staff-add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-promoter-password': getStoredPassword() },
+        body: JSON.stringify({ name: name, accountId: accountId })
+      })
+        .then(function (res) { return res.json(); })
+        .then(function (data) {
+          if (!data || !data.ok) {
+            if (staffGateError) staffGateError.textContent = '追加に失敗しました。もう一度お試しください。';
+            return;
+          }
+          if (staffNewName) staffNewName.value = '';
+          if (staffNewAccountId) staffNewAccountId.value = '';
+          return fetchStaffList().then(function (list) {
+            populateStaffSelect(list);
+            populateStaffManageList(list);
+          });
+        })
+        .catch(function () {
+          if (staffGateError) staffGateError.textContent = '通信エラーが発生しました。もう一度お試しください。';
+        })
+        .finally(function () {
+          staffAddBtn.disabled = false;
+        });
+    });
+  }
+
+  if (staffManageList) {
+    staffManageList.addEventListener('click', function (e) {
+      var btn = e.target && e.target.closest ? e.target.closest('.staff-del-btn') : null;
+      if (!btn) return;
+      var accountId = btn.getAttribute('data-account-id');
+      if (!accountId) return;
+      if (!window.confirm('この担当者を削除しますか？')) return;
+      btn.disabled = true;
+      fetch('/api/staff-delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-promoter-password': getStoredPassword() },
+        body: JSON.stringify({ accountId: accountId })
+      })
+        .then(function (res) { return res.json(); })
+        .then(function () {
+          var stored = getStoredStaff();
+          if (stored && stored.accountId === accountId) {
+            clearStoredStaff();
+            renderStaffIndicator(null);
+          }
+          return fetchStaffList().then(function (list) {
+            populateStaffSelect(list);
+            populateStaffManageList(list);
+          });
+        })
+        .catch(function () {
+          if (staffGateError) staffGateError.textContent = '削除に失敗しました。もう一度お試しください。';
+        });
+    });
   }
 
   function submitPassword() {
@@ -3631,10 +4003,16 @@ function buildPromoterAdminHtml() {
         deleteBtn.disabled = true;
         note.className = '';
         note.textContent = '';
+        var answeringStaff = getStoredStaff();
         fetch('/api/promoter-answer', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'x-promoter-password': getStoredPassword() },
-          body: JSON.stringify({ id: item.id, answer: answer })
+          body: JSON.stringify({
+            id: item.id,
+            answer: answer,
+            staffName: answeringStaff ? answeringStaff.name : '',
+            staffAccountId: answeringStaff ? answeringStaff.accountId : ''
+          })
         })
           .then(function (res) {
             if (res.status === 401) {
@@ -3897,9 +4275,13 @@ async function createSitePendingAndNotify(question, staff = null) {
   // 平常営業日になれば次の催促チェックで通知される)。
   if (isBusinessDay(new Date())) {
     try {
-      const mentions = config.holderAccountIds.map((id) => mentionTag(id)).join(' ');
+      // 固定の環境変数(HOLDER_ACCOUNT_IDS)ではなく、サイト内の「担当者」一覧
+      // (Bot_Staff、追加・削除した人)全員にTOを付けて知らせる。
+      const staffMembers = await listStaffMembers();
+      const mentions = staffMembers.map((s) => mentionTag(s.accountId, s.name)).join(' ');
+      const mentionPrefix = mentions ? `${mentions}\n` : '';
       await sendMessage(
-        `${mentions}\n`
+        mentionPrefix
         + `サイト内に未回答の質問が届いています。\n\n`
         + `【質問】\n${question}\n\n`
         + `▼回答はこちらから\nhttps://shp-company.site/qa_bot/promoter/`
@@ -4131,7 +4513,7 @@ app.post('/api/ask-hide', express.json(), async (req, res) => {
 // 質問受付ページで名前を選ぶための一覧。
 app.get('/api/staff-list', async (req, res) => {
   allowCors(req, res);
-  if (!checkChatPassword(req)) {
+  if (!checkChatOrPromoterPassword(req)) {
     return res.status(401).json({ error: 'unauthorized' });
   }
   try {
@@ -4145,7 +4527,7 @@ app.get('/api/staff-list', async (req, res) => {
 
 app.post('/api/staff-add', express.json(), async (req, res) => {
   allowCors(req, res);
-  if (!checkChatPassword(req)) {
+  if (!checkChatOrPromoterPassword(req)) {
     return res.status(401).json({ error: 'unauthorized' });
   }
   try {
@@ -4165,7 +4547,7 @@ app.post('/api/staff-add', express.json(), async (req, res) => {
 
 app.post('/api/staff-delete', express.json(), async (req, res) => {
   allowCors(req, res);
-  if (!checkChatPassword(req)) {
+  if (!checkChatOrPromoterPassword(req)) {
     return res.status(401).json({ error: 'unauthorized' });
   }
   try {
@@ -4216,6 +4598,7 @@ app.post('/api/promoter-answer', express.json(), async (req, res) => {
   try {
     const id = ((req.body && req.body.id) || '').toString();
     const answer = ((req.body && req.body.answer) || '').trim();
+    const staffName = ((req.body && req.body.staffName) || '').trim();
     if (!id || !answer) return res.status(400).json({ error: 'id and answer are required' });
 
     const pending = await listPendingRows();
@@ -4229,7 +4612,7 @@ app.post('/api/promoter-answer', express.json(), async (req, res) => {
     await updatePendingRow(target.sheetRowNumber, {
       status: 'answered',
       answer,
-      answeredBy: 'プロモーター(サイト管理画面)',
+      answeredBy: staffName ? `${staffName}(サイト管理画面)` : 'プロモーター(サイト管理画面)',
       answeredAt: new Date().toISOString(),
     });
 
