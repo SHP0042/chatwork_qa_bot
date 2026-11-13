@@ -1110,7 +1110,7 @@ function buildChatPageHtml() {
   .top-bar .subtitle-row .status-dot { margin-top: 5px; }
   .top-bar .subtitle { font-size: 12.5px; opacity: 0.97; font-weight: 600; line-height: 1.5; text-align: left; }
   .top-bar-inner { display: flex; align-items: center; justify-content: center; gap: 16px; position: relative; z-index: 1; }
-  .brand-logo { width: 64px; height: 64px; border-radius: 50%; flex-shrink: 0; box-shadow: 0 4px 14px rgba(0,0,0,0.25); }
+  .brand-logo { width: 64px; height: 64px; border-radius: 50%; flex-shrink: 0; border: 3px solid rgba(255,255,255,0.85); box-shadow: 0 4px 14px rgba(0,0,0,0.25); }
   .status-dot {
     width: 7px;
     height: 7px;
