@@ -1145,7 +1145,7 @@ function buildChatPageHtml() {
     padding: 11px 14px;
     border: 1px solid #dfe2ec;
     border-radius: 10px;
-    font-size: 14px;
+    font-size: 16px;
     margin-bottom: 12px;
     font-family: inherit;
   }
@@ -1452,7 +1452,7 @@ function buildChatPageHtml() {
     transition: border-color 0.15s ease, box-shadow 0.15s ease;
   }
   .input-inner:focus-within { border-color: var(--brand); box-shadow: 0 0 0 3px rgba(13,116,191,0.12); }
-  .input-inner input { flex: 1; border: none; outline: none; font-size: 14px; font-family: inherit; padding: 8px 0; background: transparent; }
+  .input-inner input { flex: 1; border: none; outline: none; font-size: 16px; font-family: inherit; padding: 8px 0; background: transparent; }
   .input-inner button {
     width: 40px; height: 40px; border-radius: 50%; border: none;
     background: var(--brand); color: #fff; cursor: pointer;
@@ -1463,43 +1463,61 @@ function buildChatPageHtml() {
   .input-inner button:disabled { opacity: 0.5; cursor: default; }
   .input-inner button svg { width: 17px; height: 17px; fill: #fff; }
   .input-hint { text-align: center; font-size: 11px; color: #b7bcc9; margin-top: 8px; }
-  /* ボタン共通の「水っぽい」質感と、押すとプルルンと水がはじけるような演出 */
+  /* ボタン共通の「水っぽい」質感と、押すとプルルンと水がはじけるような演出(より透明感とプルルン感を強めた版) */
   button { position: relative; overflow: visible; isolation: isolate; }
   button::before {
     content: '';
     position: absolute;
     inset: 0;
     border-radius: inherit;
-    background: linear-gradient(165deg, rgba(255,255,255,0.78) 0%, rgba(255,255,255,0.24) 32%, rgba(255,255,255,0.03) 55%, rgba(255,255,255,0.3) 100%);
+    background: linear-gradient(165deg, rgba(255,255,255,0.68) 0%, rgba(255,255,255,0.18) 30%, rgba(255,255,255,0.02) 52%, rgba(255,255,255,0.24) 100%);
     mix-blend-mode: overlay;
     pointer-events: none;
-    transition: opacity 0.15s ease;
+    transition: opacity 0.18s ease;
   }
-  button:active::before { opacity: 0.4; }
-  button.btn-jelly { animation: btnJelly 0.52s cubic-bezier(.36,1.4,.46,1) both; }
+  button::after {
+    /* 常にうっすら光る水面のようなハイライトで、透明感のあるガラス/水の質感を出す */
+    content: '';
+    position: absolute;
+    left: 9%;
+    right: 9%;
+    top: 10%;
+    height: 22%;
+    border-radius: 999px;
+    background: linear-gradient(180deg, rgba(255,255,255,0.55), rgba(255,255,255,0));
+    opacity: 0.6;
+    pointer-events: none;
+    mix-blend-mode: overlay;
+    transition: opacity 0.18s ease;
+  }
+  button:active::before { opacity: 0.28; }
+  button:active::after { opacity: 0.95; }
+  button.btn-jelly { animation: btnJelly 0.64s cubic-bezier(.36,1.5,.4,1) both; }
   @keyframes btnJelly {
     0%   { transform: scale(1, 1); }
-    18%  { transform: scale(0.84, 1.12); }
-    38%  { transform: scale(1.1, 0.88); }
-    58%  { transform: scale(0.94, 1.06); }
-    78%  { transform: scale(1.03, 0.98); }
+    12%  { transform: scale(0.76, 1.22); }
+    28%  { transform: scale(1.18, 0.8); }
+    44%  { transform: scale(0.9, 1.13); }
+    60%  { transform: scale(1.08, 0.93); }
+    75%  { transform: scale(0.96, 1.05); }
+    88%  { transform: scale(1.02, 0.985); }
     100% { transform: scale(1, 1); }
   }
   .btn-splash {
     position: absolute;
     border-radius: 50%;
     pointer-events: none;
-    border: 1.5px solid rgba(255,255,255,0.85);
-    background: radial-gradient(circle, rgba(255,255,255,0.45) 0%, rgba(255,255,255,0.14) 45%, rgba(255,255,255,0) 72%);
-    box-shadow: inset 0 0 10px rgba(255,255,255,0.55);
+    border: 1.5px solid rgba(255,255,255,0.6);
+    background: radial-gradient(circle, rgba(255,255,255,0.3) 0%, rgba(255,255,255,0.08) 45%, rgba(255,255,255,0) 72%);
+    box-shadow: inset 0 0 14px rgba(255,255,255,0.35);
     transform: scale(0.2);
-    opacity: 0.9;
-    animation: btnSplash 0.65s cubic-bezier(.22,.7,.32,1) forwards;
+    opacity: 0.8;
+    animation: btnSplash 0.78s cubic-bezier(.22,.7,.32,1) forwards;
   }
   @keyframes btnSplash {
-    0%   { transform: scale(0.2); opacity: 0.9; }
-    45%  { opacity: 0.7; }
-    100% { transform: scale(1.3); opacity: 0; }
+    0%   { transform: scale(0.2); opacity: 0.8; }
+    45%  { opacity: 0.45; }
+    100% { transform: scale(1.55); opacity: 0; }
   }
   .btn-drop {
     position: absolute;
@@ -1508,12 +1526,12 @@ function buildChatPageHtml() {
     margin: -3.5px 0 0 -3.5px;
     border-radius: 50%;
     pointer-events: none;
-    background: radial-gradient(circle at 30% 30%, rgba(255,255,255,0.95), rgba(160,215,255,0.65) 55%, rgba(160,215,255,0) 100%);
-    animation: btnDrop 0.55s cubic-bezier(.22,.7,.32,1) forwards;
+    background: radial-gradient(circle at 30% 30%, rgba(255,255,255,0.85), rgba(160,215,255,0.4) 55%, rgba(160,215,255,0) 100%);
+    animation: btnDrop 0.64s cubic-bezier(.22,.7,.32,1) forwards;
   }
   @keyframes btnDrop {
-    0%   { transform: translate(0,0) scale(1); opacity: 0.95; }
-    100% { transform: translate(var(--dx,0px),var(--dy,0px)) scale(0.2); opacity: 0; }
+    0%   { transform: translate(0,0) scale(var(--ds,1)); opacity: 0.8; }
+    100% { transform: translate(var(--dx,0px),var(--dy,0px)) scale(calc(var(--ds,1) * 0.15)); opacity: 0; }
   }
 </style>
 </head>
@@ -1591,14 +1609,14 @@ function buildChatPageHtml() {
       var x = (typeof e.clientX === 'number' && e.clientX) ? e.clientX - rect.left : rect.width / 2;
       var y = (typeof e.clientY === 'number' && e.clientY) ? e.clientY - rect.top : rect.height / 2;
 
-      // ボタン自体がプルルンと弾む
+      // ボタン自体がプルルンと弾む(前より大きく、揺れ回数も増やした)
       btn.classList.remove('btn-jelly');
       void btn.offsetWidth;
       btn.classList.add('btn-jelly');
-      window.setTimeout(function () { btn.classList.remove('btn-jelly'); }, 540);
+      window.setTimeout(function () { btn.classList.remove('btn-jelly'); }, 640);
 
-      // 水の輪がふわっと広がって消える
-      var size = Math.max(rect.width, rect.height) * 1.3;
+      // 水の輪がふわっと広がって消える(より透明に、より大きく)
+      var size = Math.max(rect.width, rect.height) * 1.5;
       var splash = document.createElement('span');
       splash.className = 'btn-splash';
       splash.style.width = splash.style.height = size + 'px';
@@ -1607,24 +1625,25 @@ function buildChatPageHtml() {
       btn.appendChild(splash);
       window.setTimeout(function () {
         if (splash.parentNode) splash.parentNode.removeChild(splash);
-      }, 700);
+      }, 800);
 
-      // 水しぶきが数滴、弾けて飛び散る
-      var dropCount = 6;
+      // 水しぶきが数滴、弾けて飛び散る(粒の大きさをランダムに、より透明に)
+      var dropCount = 7;
       for (var i = 0; i < dropCount; i++) {
         var angle = (Math.PI * 2 * i) / dropCount + (Math.random() - 0.5) * 0.6;
-        var dist = Math.max(rect.width, rect.height) * (0.55 + Math.random() * 0.35);
+        var dist = Math.max(rect.width, rect.height) * (0.6 + Math.random() * 0.4);
         var drop = document.createElement('span');
         drop.className = 'btn-drop';
         drop.style.left = x + 'px';
         drop.style.top = y + 'px';
         drop.style.setProperty('--dx', (Math.cos(angle) * dist).toFixed(1) + 'px');
         drop.style.setProperty('--dy', (Math.sin(angle) * dist).toFixed(1) + 'px');
+        drop.style.setProperty('--ds', (0.7 + Math.random() * 0.7).toFixed(2));
         btn.appendChild(drop);
         (function (d) {
           window.setTimeout(function () {
             if (d.parentNode) d.parentNode.removeChild(d);
-          }, 600);
+          }, 660);
         })(drop);
       }
     }, true);
@@ -2276,10 +2295,10 @@ function buildPromoterAdminHtml() {
 <title>SHP プロモーター用 回答管理</title>
 <style>
   :root {
-    --brand: #0d74bf;
-    --brand-dark: #004781;
-    --brand-light: #39a0e1;
-    --bg: #eef3f9;
+    --brand: #e08a2c;
+    --brand-dark: #a85d12;
+    --brand-light: #f0ab5c;
+    --bg: #fbf2e7;
     --panel: #ffffff;
     --text: #17202e;
     --muted: #5b6b7f;
@@ -2290,7 +2309,7 @@ function buildPromoterAdminHtml() {
     min-height: 100%;
     overscroll-behavior-y: none;
     font-family: "Hiragino Sans", "Hiragino Kaku Gothic ProN", "游ゴシック", "Yu Gothic", "Meiryo", sans-serif;
-    background: radial-gradient(ellipse 900px 500px at 50% 0%, #f3f8ff 0%, var(--bg) 70%);
+    background: radial-gradient(ellipse 900px 500px at 50% 0%, #fffaf3 0%, var(--bg) 70%);
     color: var(--text);
   }
   .app { display: flex; flex-direction: column; min-height: 100vh; }
@@ -2359,7 +2378,7 @@ function buildPromoterAdminHtml() {
     padding: 11px 14px;
     border: 1px solid #dfe2ec;
     border-radius: 10px;
-    font-size: 14px;
+    font-size: 16px;
     margin-bottom: 12px;
     font-family: inherit;
   }
@@ -2399,7 +2418,7 @@ function buildPromoterAdminHtml() {
     color: var(--text);
     transition: transform 0.1s ease, background 0.15s ease, box-shadow 0.15s ease;
   }
-  .admin-toolbar button:hover { background: #f5f9ff; transform: scale(1.04); box-shadow: 0 2px 8px rgba(13,116,191,0.12); }
+  .admin-toolbar button:hover { background: #fff6ea; transform: scale(1.04); box-shadow: 0 2px 8px rgba(224,138,44,0.18); }
   .empty-note {
     background: #fff;
     border: 1px solid #eef1f6;
@@ -2432,13 +2451,13 @@ function buildPromoterAdminHtml() {
     border: 1px solid #dfe2ec;
     border-radius: 10px;
     padding: 10px 12px;
-    font-size: 13.5px;
+    font-size: 16px;
     font-family: inherit;
     resize: vertical;
     margin-bottom: 10px;
     transition: border-color 0.15s ease, box-shadow 0.15s ease;
   }
-  .q-card textarea:focus { outline: none; border-color: var(--brand); box-shadow: 0 0 0 3px rgba(13,116,191,0.12); }
+  .q-card textarea:focus { outline: none; border-color: var(--brand); box-shadow: 0 0 0 3px rgba(224,138,44,0.18); }
   .q-card .q-actions { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
   .q-card button.answer-btn {
     border: none;
@@ -2468,43 +2487,61 @@ function buildPromoterAdminHtml() {
   .q-card button.delete-btn:disabled { opacity: 0.5; cursor: default; }
   .q-card .q-sent-note { font-size: 12px; color: #2a9d5c; margin-top: 4px; text-align: right; }
   .q-card .q-error-note { font-size: 12px; color: #d1403a; margin-top: 4px; text-align: right; }
-  /* ボタン共通の「水っぽい」質感と、押すとプルルンと水がはじけるような演出 */
+  /* ボタン共通の「水っぽい」質感と、押すとプルルンと水がはじけるような演出(より透明感とプルルン感を強めた版) */
   button { position: relative; overflow: visible; isolation: isolate; }
   button::before {
     content: '';
     position: absolute;
     inset: 0;
     border-radius: inherit;
-    background: linear-gradient(165deg, rgba(255,255,255,0.78) 0%, rgba(255,255,255,0.24) 32%, rgba(255,255,255,0.03) 55%, rgba(255,255,255,0.3) 100%);
+    background: linear-gradient(165deg, rgba(255,255,255,0.68) 0%, rgba(255,255,255,0.18) 30%, rgba(255,255,255,0.02) 52%, rgba(255,255,255,0.24) 100%);
     mix-blend-mode: overlay;
     pointer-events: none;
-    transition: opacity 0.15s ease;
+    transition: opacity 0.18s ease;
   }
-  button:active::before { opacity: 0.4; }
-  button.btn-jelly { animation: btnJelly 0.52s cubic-bezier(.36,1.4,.46,1) both; }
+  button::after {
+    /* 常にうっすら光る水面のようなハイライトで、透明感のあるガラス/水の質感を出す */
+    content: '';
+    position: absolute;
+    left: 9%;
+    right: 9%;
+    top: 10%;
+    height: 22%;
+    border-radius: 999px;
+    background: linear-gradient(180deg, rgba(255,255,255,0.55), rgba(255,255,255,0));
+    opacity: 0.6;
+    pointer-events: none;
+    mix-blend-mode: overlay;
+    transition: opacity 0.18s ease;
+  }
+  button:active::before { opacity: 0.28; }
+  button:active::after { opacity: 0.95; }
+  button.btn-jelly { animation: btnJelly 0.64s cubic-bezier(.36,1.5,.4,1) both; }
   @keyframes btnJelly {
     0%   { transform: scale(1, 1); }
-    18%  { transform: scale(0.84, 1.12); }
-    38%  { transform: scale(1.1, 0.88); }
-    58%  { transform: scale(0.94, 1.06); }
-    78%  { transform: scale(1.03, 0.98); }
+    12%  { transform: scale(0.76, 1.22); }
+    28%  { transform: scale(1.18, 0.8); }
+    44%  { transform: scale(0.9, 1.13); }
+    60%  { transform: scale(1.08, 0.93); }
+    75%  { transform: scale(0.96, 1.05); }
+    88%  { transform: scale(1.02, 0.985); }
     100% { transform: scale(1, 1); }
   }
   .btn-splash {
     position: absolute;
     border-radius: 50%;
     pointer-events: none;
-    border: 1.5px solid rgba(255,255,255,0.85);
-    background: radial-gradient(circle, rgba(255,255,255,0.45) 0%, rgba(255,255,255,0.14) 45%, rgba(255,255,255,0) 72%);
-    box-shadow: inset 0 0 10px rgba(255,255,255,0.55);
+    border: 1.5px solid rgba(255,255,255,0.6);
+    background: radial-gradient(circle, rgba(255,255,255,0.3) 0%, rgba(255,255,255,0.08) 45%, rgba(255,255,255,0) 72%);
+    box-shadow: inset 0 0 14px rgba(255,255,255,0.35);
     transform: scale(0.2);
-    opacity: 0.9;
-    animation: btnSplash 0.65s cubic-bezier(.22,.7,.32,1) forwards;
+    opacity: 0.8;
+    animation: btnSplash 0.78s cubic-bezier(.22,.7,.32,1) forwards;
   }
   @keyframes btnSplash {
-    0%   { transform: scale(0.2); opacity: 0.9; }
-    45%  { opacity: 0.7; }
-    100% { transform: scale(1.3); opacity: 0; }
+    0%   { transform: scale(0.2); opacity: 0.8; }
+    45%  { opacity: 0.45; }
+    100% { transform: scale(1.55); opacity: 0; }
   }
   .btn-drop {
     position: absolute;
@@ -2513,12 +2550,12 @@ function buildPromoterAdminHtml() {
     margin: -3.5px 0 0 -3.5px;
     border-radius: 50%;
     pointer-events: none;
-    background: radial-gradient(circle at 30% 30%, rgba(255,255,255,0.95), rgba(160,215,255,0.65) 55%, rgba(160,215,255,0) 100%);
-    animation: btnDrop 0.55s cubic-bezier(.22,.7,.32,1) forwards;
+    background: radial-gradient(circle at 30% 30%, rgba(255,255,255,0.85), rgba(160,215,255,0.4) 55%, rgba(160,215,255,0) 100%);
+    animation: btnDrop 0.64s cubic-bezier(.22,.7,.32,1) forwards;
   }
   @keyframes btnDrop {
-    0%   { transform: translate(0,0) scale(1); opacity: 0.95; }
-    100% { transform: translate(var(--dx,0px),var(--dy,0px)) scale(0.2); opacity: 0; }
+    0%   { transform: translate(0,0) scale(var(--ds,1)); opacity: 0.8; }
+    100% { transform: translate(var(--dx,0px),var(--dy,0px)) scale(calc(var(--ds,1) * 0.15)); opacity: 0; }
   }
 </style>
 </head>
@@ -2566,14 +2603,14 @@ function buildPromoterAdminHtml() {
       var x = (typeof e.clientX === 'number' && e.clientX) ? e.clientX - rect.left : rect.width / 2;
       var y = (typeof e.clientY === 'number' && e.clientY) ? e.clientY - rect.top : rect.height / 2;
 
-      // ボタン自体がプルルンと弾む
+      // ボタン自体がプルルンと弾む(前より大きく、揺れ回数も増やした)
       btn.classList.remove('btn-jelly');
       void btn.offsetWidth;
       btn.classList.add('btn-jelly');
-      window.setTimeout(function () { btn.classList.remove('btn-jelly'); }, 540);
+      window.setTimeout(function () { btn.classList.remove('btn-jelly'); }, 640);
 
-      // 水の輪がふわっと広がって消える
-      var size = Math.max(rect.width, rect.height) * 1.3;
+      // 水の輪がふわっと広がって消える(より透明に、より大きく)
+      var size = Math.max(rect.width, rect.height) * 1.5;
       var splash = document.createElement('span');
       splash.className = 'btn-splash';
       splash.style.width = splash.style.height = size + 'px';
@@ -2582,24 +2619,25 @@ function buildPromoterAdminHtml() {
       btn.appendChild(splash);
       window.setTimeout(function () {
         if (splash.parentNode) splash.parentNode.removeChild(splash);
-      }, 700);
+      }, 800);
 
-      // 水しぶきが数滴、弾けて飛び散る
-      var dropCount = 6;
+      // 水しぶきが数滴、弾けて飛び散る(粒の大きさをランダムに、より透明に)
+      var dropCount = 7;
       for (var i = 0; i < dropCount; i++) {
         var angle = (Math.PI * 2 * i) / dropCount + (Math.random() - 0.5) * 0.6;
-        var dist = Math.max(rect.width, rect.height) * (0.55 + Math.random() * 0.35);
+        var dist = Math.max(rect.width, rect.height) * (0.6 + Math.random() * 0.4);
         var drop = document.createElement('span');
         drop.className = 'btn-drop';
         drop.style.left = x + 'px';
         drop.style.top = y + 'px';
         drop.style.setProperty('--dx', (Math.cos(angle) * dist).toFixed(1) + 'px');
         drop.style.setProperty('--dy', (Math.sin(angle) * dist).toFixed(1) + 'px');
+        drop.style.setProperty('--ds', (0.7 + Math.random() * 0.7).toFixed(2));
         btn.appendChild(drop);
         (function (d) {
           window.setTimeout(function () {
             if (d.parentNode) d.parentNode.removeChild(d);
-          }, 600);
+          }, 660);
         })(drop);
       }
     }, true);
