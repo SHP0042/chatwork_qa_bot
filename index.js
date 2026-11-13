@@ -74,6 +74,9 @@ const config = {
   vapidPrivateKey: process.env.VAPID_PRIVATE_KEY || '',
   vapidSubject: process.env.VAPID_SUBJECT || '',
   pushSheetName: process.env.PUSH_SHEET_NAME || 'Bot_PushSubscriptions',
+
+  // 接客担当スタッフの名前とChatworkアカウントIDの一覧を保存するシート。
+  staffSheetName: process.env.STAFF_SHEET_NAME || 'Bot_Staff',
 };
 
 function assertConfig() {
@@ -630,6 +633,100 @@ async function sendPushToAllSubscribers(payload) {
       console.error('期限切れプッシュ購読の削除に失敗しました:', e);
     }
   }
+}
+
+// ============================================================
+// 接客担当スタッフの一覧(質問受付ページで名前を選んでもらい、回答が来たときに
+// Chatworkでその人にTOを付けて通知するために使う)。サイト内から追加・削除できる。
+// ============================================================
+const STAFF_HEADERS = ['名前', 'ChatworkアカウントID'];
+
+async function ensureStaffSheetExists() {
+  const title = config.staffSheetName;
+  const sheets = await getSheets();
+  const exists = await sheetTabExists(title);
+  if (!exists) {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: config.sheetId,
+      requestBody: { requests: [{ addSheet: { properties: { title } } }] },
+    });
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: config.sheetId,
+      range: `${title}!A1`,
+      valueInputOption: 'RAW',
+      requestBody: { values: [STAFF_HEADERS] },
+    });
+  }
+}
+
+async function listStaffMembers() {
+  await ensureStaffSheetExists();
+  const sheets = await getSheets();
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: config.sheetId,
+    range: `${config.staffSheetName}`,
+  });
+  const values = res.data.values || [];
+  const rows = [];
+  for (let i = 1; i < values.length; i++) {
+    const r = values[i];
+    if (!r[1]) continue; // アカウントIDが無い行は無視
+    rows.push({
+      sheetRowNumber: i + 1,
+      name: r[0] || '',
+      accountId: String(r[1]).trim(),
+    });
+  }
+  return rows;
+}
+
+// 同じアカウントIDが既にあれば名前だけ更新し、無ければ新しい行を追加する。
+async function upsertStaffMember(name, accountId) {
+  await ensureStaffSheetExists();
+  const sheets = await getSheets();
+  const existing = await listStaffMembers();
+  const match = existing.find((r) => r.accountId === accountId);
+  if (match) {
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: config.sheetId,
+      range: `${config.staffSheetName}!A${match.sheetRowNumber}`,
+      valueInputOption: 'USER_ENTERED',
+      requestBody: { values: [[name]] },
+    });
+    return;
+  }
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: config.sheetId,
+    range: `${config.staffSheetName}`,
+    valueInputOption: 'USER_ENTERED',
+    insertDataOption: 'INSERT_ROWS',
+    requestBody: { values: [[name, accountId]] },
+  });
+}
+
+async function removeStaffMember(accountId) {
+  const sheets = await getSheets();
+  const existing = await listStaffMembers();
+  const match = existing.find((r) => r.accountId === accountId);
+  if (!match) return;
+  const tabs = await listAllSheetTabs();
+  const tab = tabs.find((t) => t.title === config.staffSheetName);
+  if (!tab) return;
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: config.sheetId,
+    requestBody: {
+      requests: [{
+        deleteDimension: {
+          range: {
+            sheetId: Number(tab.gid),
+            dimension: 'ROWS',
+            startIndex: match.sheetRowNumber - 1,
+            endIndex: match.sheetRowNumber,
+          },
+        },
+      }],
+    },
+  });
 }
 
 // ============================================================
@@ -1706,6 +1803,108 @@ function buildChatPageHtml() {
     60%  { transform: translate(calc(var(--dx,0px) * 0.6), calc(var(--dy,0px) * 0.6)) scale(var(--ds,1)) rotate(calc(var(--rot,70deg) * 0.65)); opacity: 1; }
     100% { transform: translate(var(--dx,0px),var(--dy,0px)) scale(calc(var(--ds,1) * 0.2)) rotate(var(--rot,70deg)); opacity: 0; }
   }
+
+  .staff-indicator-btn {
+    border: none;
+    background: rgba(255,255,255,0.22);
+    color: #fff;
+    font-size: 10.5px;
+    font-weight: 700;
+    border-radius: 8px;
+    padding: 6px 9px;
+    cursor: pointer;
+    font-family: inherit;
+    white-space: nowrap;
+    transition: transform 0.1s ease, background 0.2s ease;
+    flex-shrink: 0;
+  }
+  .staff-indicator-btn:hover { background: rgba(255,255,255,0.32); transform: scale(1.03); }
+  .staff-indicator-btn:active { transform: scale(0.96); }
+
+  .gate-card select {
+    width: 100%;
+    padding: 11px 14px;
+    border: 1px solid #dfe2ec;
+    border-radius: 10px;
+    font-size: 16px;
+    margin-bottom: 12px;
+    font-family: inherit;
+    background: #fff;
+    color: var(--text);
+  }
+  .staff-gate-card { max-width: 400px; }
+  .staff-manage-link {
+    display: inline-block;
+    margin-top: 4px;
+    margin-bottom: 14px;
+    font-size: 12.5px;
+    color: var(--muted);
+    text-decoration: underline;
+    cursor: pointer;
+    background: none;
+    border: none;
+    font-family: inherit;
+    width: auto;
+  }
+  .staff-manage-box {
+    display: none;
+    text-align: left;
+    border-top: 1px solid #eef1f6;
+    margin-top: 10px;
+    padding-top: 14px;
+  }
+  .staff-manage-box.open { display: block; }
+  .staff-manage-box h4 { font-size: 13px; margin: 0 0 8px; color: var(--text); }
+  .staff-manage-list { list-style: none; margin: 0 0 14px; padding: 0; max-height: 160px; overflow-y: auto; }
+  .staff-manage-list li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 7px 0;
+    border-bottom: 1px solid #f3f4f8;
+    font-size: 13px;
+  }
+  .staff-manage-list li .staff-del-btn {
+    border: none;
+    background: #fdecea;
+    color: #d1403a;
+    font-size: 11px;
+    font-weight: 700;
+    border-radius: 7px;
+    padding: 4px 8px;
+    cursor: pointer;
+    font-family: inherit;
+    width: auto;
+    flex-shrink: 0;
+  }
+  .staff-manage-empty { font-size: 12.5px; color: var(--muted); margin: 0 0 14px; }
+  .staff-add-row { display: flex; gap: 6px; margin-bottom: 4px; }
+  .staff-add-row input {
+    flex: 1;
+    min-width: 0;
+    padding: 9px 10px;
+    border: 1px solid #dfe2ec;
+    border-radius: 9px;
+    font-size: 13.5px;
+    font-family: inherit;
+    margin-bottom: 0;
+  }
+  .staff-add-btn {
+    border: none;
+    background: var(--brand);
+    color: #fff;
+    font-size: 13px;
+    font-weight: 700;
+    border-radius: 9px;
+    padding: 0 14px;
+    cursor: pointer;
+    font-family: inherit;
+    width: auto;
+    flex-shrink: 0;
+  }
+  .staff-add-hint { font-size: 11.5px; color: var(--muted); margin: 6px 0 0; }
+  .staff-gate-error { color: #d1403a; font-size: 12.5px; margin-top: 8px; min-height: 16px; }
 </style>
 </head>
 <body>
@@ -1720,6 +1919,7 @@ function buildChatPageHtml() {
           <span class="subtitle">接客担当専用 ご質問受付</span>
         </div>
       </div>
+      <button type="button" id="staffIndicatorBtn" class="staff-indicator-btn" style="display:none;"></button>
       <button type="button" id="pushEnableBtn" class="push-enable-btn" style="display:none;">🔔 通知を有効にする</button>
     </div>
   </div>
@@ -1738,6 +1938,28 @@ function buildChatPageHtml() {
       <input type="password" id="gate-password" placeholder="パスワード" />
       <button id="gate-submit">開く</button>
       <div class="gate-error" id="gate-error"></div>
+    </div>
+  </div>
+
+  <div id="staffGate" class="gate-wrap" style="display:none;">
+    <div class="gate-card staff-gate-card">
+      <h2>あなたのお名前を選択してください</h2>
+      <select id="staffSelect"></select>
+      <div class="staff-manage-empty" id="staffEmptyMsg" style="display:none;">まだ担当者が登録されていません。下の「担当者の追加・削除」から登録してください。</div>
+      <button id="staffSelectConfirm">この名前で始める</button>
+      <div class="staff-gate-error" id="staffGateError"></div>
+
+      <button type="button" class="staff-manage-link" id="staffManageToggle">担当者の追加・削除</button>
+      <div class="staff-manage-box" id="staffManageBox">
+        <h4>登録されている担当者</h4>
+        <ul class="staff-manage-list" id="staffManageList"></ul>
+        <div class="staff-add-row">
+          <input type="text" id="staffNewName" placeholder="名前" />
+          <input type="text" id="staffNewAccountId" placeholder="ChatworkアカウントID" inputmode="numeric" />
+          <button type="button" class="staff-add-btn" id="staffAddBtn">追加</button>
+        </div>
+        <div class="staff-add-hint">ChatworkアカウントIDは、Chatworkのプロフィール画面に出ている数字のIDです。</div>
+      </div>
     </div>
   </div>
 
@@ -1978,6 +2200,7 @@ function buildChatPageHtml() {
   })();
   var STORAGE_KEY = 'shpChatPassword';
   var READ_IDS_KEY = 'shpChatReadIds';
+  var STAFF_KEY = 'shpStaffIdentity';
   var POLL_INTERVAL_MS = 20000;
   var passwordRequired = ${config.chatPagePassword ? 'true' : 'false'};
 
@@ -2006,6 +2229,24 @@ function buildChatPageHtml() {
   }
   function clearStoredPassword() {
     try { window.sessionStorage.removeItem(STORAGE_KEY); } catch (e) { /* 無視 */ }
+  }
+
+  // この端末で選んだ担当者(名前・ChatworkアカウントID)は、毎回選び直さなくて
+  // 済むよう、この端末のlocalStorageに覚えておく。
+  function getStoredStaff() {
+    try {
+      var raw = window.localStorage.getItem(STAFF_KEY);
+      if (!raw) return null;
+      var obj = JSON.parse(raw);
+      if (obj && obj.accountId) return obj;
+      return null;
+    } catch (e) { return null; }
+  }
+  function setStoredStaff(staff) {
+    try { window.localStorage.setItem(STAFF_KEY, JSON.stringify(staff)); } catch (e) { /* 無視 */ }
+  }
+  function clearStoredStaff() {
+    try { window.localStorage.removeItem(STAFF_KEY); } catch (e) { /* 無視 */ }
   }
 
   // 質問一覧(部屋)は、誰が聞いた質問でも接客担当全員が同じものを見られるよう、
@@ -2060,6 +2301,18 @@ function buildChatPageHtml() {
   var gateSubmit = qs('gate-submit');
   var gatePassword = qs('gate-password');
   var gateError = qs('gate-error');
+  var staffIndicatorBtn = qs('staffIndicatorBtn');
+  var staffGateWrap = qs('staffGate');
+  var staffSelect = qs('staffSelect');
+  var staffEmptyMsg = qs('staffEmptyMsg');
+  var staffSelectConfirm = qs('staffSelectConfirm');
+  var staffGateError = qs('staffGateError');
+  var staffManageToggle = qs('staffManageToggle');
+  var staffManageBox = qs('staffManageBox');
+  var staffManageList = qs('staffManageList');
+  var staffNewName = qs('staffNewName');
+  var staffNewAccountId = qs('staffNewAccountId');
+  var staffAddBtn = qs('staffAddBtn');
   var chatShell = qs('chatShell');
   var roomListEl = qs('roomList');
   var newRoomBtn = qs('newRoomBtn');
@@ -2286,6 +2539,7 @@ function buildChatPageHtml() {
     clearStoredPassword();
     roleSelectWrap.style.display = 'flex';
     gateWrap.style.display = 'none';
+    staffGateWrap.style.display = 'none';
     chatWrap.style.display = 'none';
   }
 
@@ -2293,19 +2547,241 @@ function buildChatPageHtml() {
     clearStoredPassword();
     roleSelectWrap.style.display = 'none';
     gateWrap.style.display = 'flex';
+    staffGateWrap.style.display = 'none';
     chatWrap.style.display = 'none';
     gateError.textContent = message || '';
   }
 
-  function showChat() {
+  function enterChatForReal() {
     roleSelectWrap.style.display = 'none';
     gateWrap.style.display = 'none';
+    staffGateWrap.style.display = 'none';
     chatWrap.style.display = 'flex';
     renderRoomList();
     renderRoomDetail(null);
     input.focus();
     refreshRoomList();
     setupPushNotifications();
+  }
+
+  // ===== 担当者(名前)の選択 =====
+  // 質問受付ページを開いた人が誰か(接客担当の誰か)を一度選んでもらい、
+  // この端末に覚えておく。回答が来たときにChatworkでその人にTOを付けて
+  // 知らせるために使う。担当者の追加・削除もこの画面から行える。
+  var staffListCache = [];
+
+  function renderStaffIndicator(staff) {
+    if (!staffIndicatorBtn) return;
+    if (staff && staff.name) {
+      staffIndicatorBtn.style.display = 'inline-flex';
+      staffIndicatorBtn.textContent = '👤 ' + staff.name;
+    } else {
+      staffIndicatorBtn.style.display = 'none';
+      staffIndicatorBtn.textContent = '';
+    }
+  }
+
+  function populateStaffSelect(list) {
+    if (!staffSelect) return;
+    staffSelect.innerHTML = '';
+    if (!list || list.length === 0) {
+      if (staffEmptyMsg) staffEmptyMsg.style.display = 'block';
+      staffSelect.style.display = 'none';
+      if (staffSelectConfirm) staffSelectConfirm.disabled = true;
+      return;
+    }
+    if (staffEmptyMsg) staffEmptyMsg.style.display = 'none';
+    staffSelect.style.display = '';
+    if (staffSelectConfirm) staffSelectConfirm.disabled = false;
+    list.forEach(function (s) {
+      var opt = document.createElement('option');
+      opt.value = s.accountId;
+      opt.textContent = s.name;
+      staffSelect.appendChild(opt);
+    });
+    var stored = getStoredStaff();
+    if (stored && list.some(function (s) { return s.accountId === stored.accountId; })) {
+      staffSelect.value = stored.accountId;
+    }
+  }
+
+  function populateStaffManageList(list) {
+    if (!staffManageList) return;
+    staffManageList.innerHTML = '';
+    if (!list || list.length === 0) return;
+    list.forEach(function (s) {
+      var li = document.createElement('li');
+      var nameSpan = document.createElement('span');
+      nameSpan.textContent = s.name + '(ID:' + s.accountId + ')';
+      var delBtn = document.createElement('button');
+      delBtn.type = 'button';
+      delBtn.className = 'staff-del-btn';
+      delBtn.textContent = '削除';
+      delBtn.setAttribute('data-account-id', s.accountId);
+      li.appendChild(nameSpan);
+      li.appendChild(delBtn);
+      staffManageList.appendChild(li);
+    });
+  }
+
+  function fetchStaffList() {
+    return fetch('/api/staff-list', {
+      headers: { 'x-chat-password': getStoredPassword() }
+    })
+      .then(function (res) { return res.json(); })
+      .then(function (data) { return (data && data.items) || []; });
+  }
+
+  function showStaffGate() {
+    roleSelectWrap.style.display = 'none';
+    gateWrap.style.display = 'none';
+    chatWrap.style.display = 'none';
+    staffGateWrap.style.display = 'flex';
+    if (staffGateError) staffGateError.textContent = '';
+    fetchStaffList()
+      .then(function (list) {
+        staffListCache = list;
+        populateStaffSelect(list);
+        populateStaffManageList(list);
+        if (staffManageBox && list.length === 0) staffManageBox.classList.add('open');
+      })
+      .catch(function () {
+        if (staffGateError) staffGateError.textContent = '担当者一覧の取得に失敗しました。もう一度お試しください。';
+      });
+  }
+
+  // パスワードでのログインが済んだあと、この端末に覚えている担当者が
+  // まだ(削除などで)有効かどうかを確認してから、チャット画面に進む。
+  function ensureStaffIdentityThenEnterChat() {
+    var stored = getStoredStaff();
+    fetchStaffList()
+      .then(function (list) {
+        staffListCache = list;
+        if (stored && list.some(function (s) { return s.accountId === stored.accountId; })) {
+          renderStaffIndicator(stored);
+          enterChatForReal();
+        } else {
+          clearStoredStaff();
+          renderStaffIndicator(null);
+          populateStaffSelect(list);
+          populateStaffManageList(list);
+          roleSelectWrap.style.display = 'none';
+          gateWrap.style.display = 'none';
+          chatWrap.style.display = 'none';
+          staffGateWrap.style.display = 'flex';
+          if (staffGateError) staffGateError.textContent = '';
+          if (staffManageBox && list.length === 0) staffManageBox.classList.add('open');
+        }
+      })
+      .catch(function () {
+        // 担当者一覧が取れなくても、質問自体はできるようにしておく。
+        enterChatForReal();
+      });
+  }
+
+  function showChat() {
+    roleSelectWrap.style.display = 'none';
+    gateWrap.style.display = 'none';
+    chatWrap.style.display = 'none';
+    ensureStaffIdentityThenEnterChat();
+  }
+
+  if (staffSelectConfirm) {
+    staffSelectConfirm.addEventListener('click', function () {
+      if (!staffSelect || !staffSelect.value) {
+        if (staffGateError) staffGateError.textContent = '名前を選択してください。';
+        return;
+      }
+      var selectedOpt = staffSelect.options[staffSelect.selectedIndex];
+      var staff = { accountId: staffSelect.value, name: selectedOpt ? selectedOpt.textContent : '' };
+      setStoredStaff(staff);
+      renderStaffIndicator(staff);
+      enterChatForReal();
+    });
+  }
+
+  if (staffIndicatorBtn) {
+    staffIndicatorBtn.addEventListener('click', showStaffGate);
+  }
+
+  if (staffManageToggle) {
+    staffManageToggle.addEventListener('click', function () {
+      if (staffManageBox) staffManageBox.classList.toggle('open');
+    });
+  }
+
+  if (staffAddBtn) {
+    staffAddBtn.addEventListener('click', function () {
+      var name = (staffNewName && staffNewName.value || '').trim();
+      var accountId = (staffNewAccountId && staffNewAccountId.value || '').trim();
+      if (!name || !accountId) {
+        if (staffGateError) staffGateError.textContent = '名前とChatworkアカウントIDの両方を入力してください。';
+        return;
+      }
+      if (!/^[0-9]+$/.test(accountId)) {
+        if (staffGateError) staffGateError.textContent = 'ChatworkアカウントIDは数字で入力してください。';
+        return;
+      }
+      if (staffGateError) staffGateError.textContent = '';
+      staffAddBtn.disabled = true;
+      fetch('/api/staff-add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-chat-password': getStoredPassword() },
+        body: JSON.stringify({ name: name, accountId: accountId })
+      })
+        .then(function (res) { return res.json(); })
+        .then(function (data) {
+          if (!data || !data.ok) {
+            if (staffGateError) staffGateError.textContent = '追加に失敗しました。もう一度お試しください。';
+            return;
+          }
+          if (staffNewName) staffNewName.value = '';
+          if (staffNewAccountId) staffNewAccountId.value = '';
+          return fetchStaffList().then(function (list) {
+            staffListCache = list;
+            populateStaffSelect(list);
+            populateStaffManageList(list);
+          });
+        })
+        .catch(function () {
+          if (staffGateError) staffGateError.textContent = '通信エラーが発生しました。もう一度お試しください。';
+        })
+        .finally(function () {
+          staffAddBtn.disabled = false;
+        });
+    });
+  }
+
+  if (staffManageList) {
+    staffManageList.addEventListener('click', function (e) {
+      var btn = e.target && e.target.closest ? e.target.closest('.staff-del-btn') : null;
+      if (!btn) return;
+      var accountId = btn.getAttribute('data-account-id');
+      if (!accountId) return;
+      if (!window.confirm('この担当者を削除しますか？')) return;
+      btn.disabled = true;
+      fetch('/api/staff-delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-chat-password': getStoredPassword() },
+        body: JSON.stringify({ accountId: accountId })
+      })
+        .then(function (res) { return res.json(); })
+        .then(function () {
+          var stored = getStoredStaff();
+          if (stored && stored.accountId === accountId) {
+            clearStoredStaff();
+            renderStaffIndicator(null);
+          }
+          return fetchStaffList().then(function (list) {
+            staffListCache = list;
+            populateStaffSelect(list);
+            populateStaffManageList(list);
+          });
+        })
+        .catch(function () {
+          if (staffGateError) staffGateError.textContent = '削除に失敗しました。もう一度お試しください。';
+        });
+    });
   }
 
   function submitPassword() {
@@ -2548,10 +3024,15 @@ function buildChatPageHtml() {
     addRoomMessage(room, 'user', question, false);
     addTyping();
 
+    var selectedStaff = getStoredStaff();
     fetch('/api/ask', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-chat-password': getStoredPassword() },
-      body: JSON.stringify({ question: question })
+      body: JSON.stringify({
+        question: question,
+        staffName: selectedStaff ? selectedStaff.name : '',
+        staffAccountId: selectedStaff ? selectedStaff.accountId : ''
+      })
     })
       .then(function (res) {
         if (res.status === 401) {
@@ -3343,7 +3824,7 @@ function allowCors(req, res) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-chat-password, x-promoter-password');
 }
 
-['/api/ask-login', '/api/ask', '/api/ask-list', '/api/ask-status', '/api/ask-delete', '/api/ask-hide', '/api/promoter-login', '/api/promoter-pending', '/api/promoter-answer', '/api/promoter-delete', '/api/push-subscribe'].forEach(
+['/api/ask-login', '/api/ask', '/api/ask-list', '/api/ask-status', '/api/ask-delete', '/api/ask-hide', '/api/promoter-login', '/api/promoter-pending', '/api/promoter-answer', '/api/promoter-delete', '/api/push-subscribe', '/api/staff-list', '/api/staff-add', '/api/staff-delete'].forEach(
   (path) => {
     app.options(path, (req, res) => {
       allowCors(req, res);
@@ -3397,13 +3878,13 @@ app.post('/api/ask-login', express.json(), (req, res) => {
 
 // Q&A表に答えが無かった分を保留シートに記録し、見落とし防止のため既存のChatwork
 // ルームに軽い通知を送る(新しいグループは作らず、返信も期待しない)。
-async function createSitePendingAndNotify(question) {
+async function createSitePendingAndNotify(question, staff = null) {
   let pendingId = null;
   try {
     pendingId = await appendPendingRow({
       question,
-      askerAccountId: '',
-      askerName: '接客担当(自社サイト)',
+      askerAccountId: staff ? staff.accountId : '',
+      askerName: staff ? staff.name : '接客担当(自社サイト)',
       roomId: 'site-chat',
       questionMessageId: '',
       holderRequestMessageId: '',
@@ -3432,12 +3913,12 @@ async function createSitePendingAndNotify(question) {
 // FAQに即座にマッチして回答できた質問も、接客担当全員で共有する質問一覧
 // (/api/ask-list)に出てくるよう、answered状態のまま保留シートに記録しておく。
 // (Chatworkへの通知やプロモーターへの確認は不要なので、ここでは行わない)
-async function recordSiteAnswered(question, answer) {
+async function recordSiteAnswered(question, answer, staff = null) {
   try {
     return await appendPendingRow({
       question,
-      askerAccountId: '',
-      askerName: '接客担当(自社サイト)',
+      askerAccountId: staff ? staff.accountId : '',
+      askerName: staff ? staff.name : '接客担当(自社サイト)',
       roomId: 'site-chat',
       questionMessageId: '',
       holderRequestMessageId: '',
@@ -3460,11 +3941,15 @@ app.post('/api/ask', express.json(), async (req, res) => {
     const question = ((req.body && req.body.question) || '').trim();
     if (!question) return res.status(400).json({ error: 'question is required' });
 
+    const staffName = ((req.body && req.body.staffName) || '').trim();
+    const staffAccountId = ((req.body && req.body.staffAccountId) || '').trim();
+    const staff = staffAccountId ? { name: staffName, accountId: staffAccountId } : null;
+
     const { rows } = await readFaqTable();
     let result = exactMatchQuestion(question, rows);
 
     if (result.matched && result.answer) {
-      const id = await recordSiteAnswered(question, result.answer);
+      const id = await recordSiteAnswered(question, result.answer, staff);
       return res.json({ answered: true, answer: result.answer, id });
     }
 
@@ -3480,10 +3965,10 @@ app.post('/api/ask', express.json(), async (req, res) => {
           .join('\n');
         const leftover = formatLeftoverQuestions(unmatched).trim();
         if (!leftover) {
-          const id = await recordSiteAnswered(question, answerBody);
+          const id = await recordSiteAnswered(question, answerBody, staff);
           return res.json({ answered: true, answer: answerBody, id });
         }
-        const pendingId = await createSitePendingAndNotify(leftover);
+        const pendingId = await createSitePendingAndNotify(leftover, staff);
         return res.json({
           answered: false,
           pendingId,
@@ -3510,13 +3995,13 @@ app.post('/api/ask', express.json(), async (req, res) => {
     }
 
     if (result.matched && result.answer) {
-      const id = await recordSiteAnswered(question, result.answer);
+      const id = await recordSiteAnswered(question, result.answer, staff);
       return res.json({ answered: true, answer: result.answer, id });
     }
 
     // Q&A表に答えが無い場合は、保留シートに記録したうえで、プロモーター用の
     // 回答管理ページ(/promoter)で回答してもらう。
-    const pendingId = await createSitePendingAndNotify(question);
+    const pendingId = await createSitePendingAndNotify(question, staff);
 
     return res.json({
       answered: false,
@@ -3642,6 +4127,57 @@ app.post('/api/ask-hide', express.json(), async (req, res) => {
   }
 });
 
+// 質問受付ページで名前を選ぶための一覧。
+app.get('/api/staff-list', async (req, res) => {
+  allowCors(req, res);
+  if (!checkChatPassword(req)) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  try {
+    const staff = await listStaffMembers();
+    return res.json({ items: staff.map((s) => ({ name: s.name, accountId: s.accountId })) });
+  } catch (e) {
+    console.error('/api/staff-list エラー:', e);
+    res.status(500).json({ error: 'internal error' });
+  }
+});
+
+app.post('/api/staff-add', express.json(), async (req, res) => {
+  allowCors(req, res);
+  if (!checkChatPassword(req)) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  try {
+    const name = ((req.body && req.body.name) || '').trim();
+    const accountId = ((req.body && req.body.accountId) || '').trim();
+    if (!name || !accountId) return res.status(400).json({ error: 'name and accountId are required' });
+    if (!/^[0-9]+$/.test(accountId)) {
+      return res.status(400).json({ error: 'accountId must be numeric' });
+    }
+    await upsertStaffMember(name, accountId);
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('/api/staff-add エラー:', e);
+    res.status(500).json({ ok: false, error: 'internal_error' });
+  }
+});
+
+app.post('/api/staff-delete', express.json(), async (req, res) => {
+  allowCors(req, res);
+  if (!checkChatPassword(req)) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  try {
+    const accountId = ((req.body && req.body.accountId) || '').trim();
+    if (!accountId) return res.status(400).json({ error: 'accountId is required' });
+    await removeStaffMember(accountId);
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('/api/staff-delete エラー:', e);
+    res.status(500).json({ ok: false, error: 'internal_error' });
+  }
+});
+
 // ---- プロモーター側（答える側） ----
 
 app.post('/api/promoter-login', express.json(), (req, res) => {
@@ -3703,6 +4239,24 @@ app.post('/api/promoter-answer', express.json(), async (req, res) => {
       body: target.question.length > 40 ? target.question.slice(0, 40) + '…' : target.question,
       url: 'https://shp-company.site/qa_bot/',
     }).catch((e) => console.error('プッシュ通知の送信中にエラーが発生しました:', e));
+
+    // ブラウザの通知に気づけなかった場合の保険として、Chatworkにも
+    // 「回答しました」という通知を送る。質問を受け付けた担当者がわかっている場合は
+    // その人にTOを付けて知らせる(わからない場合は誰にもメンションしない)。
+    try {
+      const mentionPrefix = target.askerAccountId
+        ? `${mentionTag(target.askerAccountId, target.askerName)}\n`
+        : '';
+      await sendMessage(
+        mentionPrefix
+        + `サイト内の質問に回答しました。\n\n`
+        + `【質問】\n${target.question}\n\n`
+        + `【回答】\n${answer}\n\n`
+        + `▼質問受付ページはこちら\nhttps://shp-company.site/qa_bot/`
+      );
+    } catch (e) {
+      console.error('Chatworkへの回答済み通知の送信に失敗しました:', e);
+    }
 
     return res.json({ ok: true });
   } catch (e) {
