@@ -5,7 +5,7 @@ import fs from 'fs';
 import fetch from 'node-fetch';
 import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai';
 import holiday_jp from 'japanese-holidays';
-import webpush from 'web-push';
+import * as webpush from 'web-push';
 
 // サーバーの時刻をUTCではなく日本時間(JST)に固定する。
 // これを最初に設定しないと、営業日計算や「朝9時」などの時刻指定が
