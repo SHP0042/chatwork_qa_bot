@@ -5,6 +5,7 @@ import fs from 'fs';
 import fetch from 'node-fetch';
 import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai';
 import holiday_jp from 'japanese-holidays';
+import webpush from 'web-push';
 
 // サーバーの時刻をUTCではなく日本時間(JST)に固定する。
 // これを最初に設定しないと、営業日計算や「朝9時」などの時刻指定が
@@ -63,6 +64,16 @@ const config = {
   // プロモーター向け管理画面(回答する側)の共通パスワード。
   // 未設定の場合は誰でもページを開ける状態になる。
   promoterPagePassword: process.env.PROMOTER_PAGE_PASSWORD || '',
+
+  // ブラウザのプッシュ通知(質問受付ページを閉じていても回答に気づけるようにする機能)用。
+  // VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY は webpush.generateVAPIDKeys() で生成した鍵ペア。
+  // VAPID_SUBJECT は「連絡先」としてプッシュ配信サービスに送られる値(mailto:アドレス
+  // またはhttps://のURL)。未設定の場合、プッシュ通知の送信はスキップされる(エラーには
+  // ならず、サイト自体は通常どおり動く)。
+  vapidPublicKey: process.env.VAPID_PUBLIC_KEY || '',
+  vapidPrivateKey: process.env.VAPID_PRIVATE_KEY || '',
+  vapidSubject: process.env.VAPID_SUBJECT || '',
+  pushSheetName: process.env.PUSH_SHEET_NAME || 'Bot_PushSubscriptions',
 };
 
 function assertConfig() {
@@ -472,6 +483,153 @@ async function updatePendingRow(sheetRowNumber, updates) {
     spreadsheetId: config.sheetId,
     requestBody: { valueInputOption: 'USER_ENTERED', data },
   });
+}
+
+// ============================================================
+// ブラウザのプッシュ通知(質問受付ページを閉じていても回答に気づける機能)の購読先管理
+// ============================================================
+const PUSH_HEADERS = ['エンドポイント', 'p256dh', 'auth', '登録日時'];
+
+async function ensurePushSheetExists() {
+  const title = config.pushSheetName;
+  const sheets = await getSheets();
+  const exists = await sheetTabExists(title);
+  if (!exists) {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: config.sheetId,
+      requestBody: { requests: [{ addSheet: { properties: { title } } }] },
+    });
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: config.sheetId,
+      range: `${title}!A1`,
+      valueInputOption: 'RAW',
+      requestBody: { values: [PUSH_HEADERS] },
+    });
+  }
+}
+
+async function listPushSubscriptionRows() {
+  await ensurePushSheetExists();
+  const sheets = await getSheets();
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: config.sheetId,
+    range: `${config.pushSheetName}`,
+  });
+  const values = res.data.values || [];
+  const rows = [];
+  for (let i = 1; i < values.length; i++) {
+    const r = values[i];
+    if (!r[0]) continue;
+    rows.push({
+      sheetRowNumber: i + 1,
+      endpoint: r[0],
+      p256dh: r[1] || '',
+      auth: r[2] || '',
+      createdAt: r[3] || '',
+    });
+  }
+  return rows;
+}
+
+// 同じ端末・ブラウザから何度も登録されても重複して保存しないよう、endpoint
+// (購読ごとに割り振られる一意なURL)が既にあれば何もしない。
+async function appendPushSubscriptionRow(subscription) {
+  if (!subscription || !subscription.endpoint) return;
+  await ensurePushSheetExists();
+  const existing = await listPushSubscriptionRows();
+  if (existing.some((r) => r.endpoint === subscription.endpoint)) {
+    return;
+  }
+  const sheets = await getSheets();
+  const now = new Date().toISOString();
+  const row = [
+    subscription.endpoint,
+    (subscription.keys && subscription.keys.p256dh) || '',
+    (subscription.keys && subscription.keys.auth) || '',
+    now,
+  ];
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: config.sheetId,
+    range: `${config.pushSheetName}`,
+    valueInputOption: 'USER_ENTERED',
+    insertDataOption: 'INSERT_ROWS',
+    requestBody: { values: [row] },
+  });
+}
+
+// 期限切れ(410 Gone等)になった購読をシートから削除する。行番号がずれないよう、
+// 末尾の行から順に削除する。
+async function removePushSubscriptionRows(sheetRowNumbers) {
+  if (!sheetRowNumbers || sheetRowNumbers.length === 0) return;
+  const sheets = await getSheets();
+  const tabs = await listAllSheetTabs();
+  const tab = tabs.find((t) => t.title === config.pushSheetName);
+  if (!tab) return;
+  const sorted = [...new Set(sheetRowNumbers)].sort((a, b) => b - a);
+  const requests = sorted.map((rowNumber) => ({
+    deleteDimension: {
+      range: {
+        sheetId: Number(tab.gid),
+        dimension: 'ROWS',
+        startIndex: rowNumber - 1,
+        endIndex: rowNumber,
+      },
+    },
+  }));
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: config.sheetId,
+    requestBody: { requests },
+  });
+}
+
+let webpushConfigured = false;
+function ensureWebpushConfigured() {
+  if (webpushConfigured) return true;
+  if (!config.vapidPublicKey || !config.vapidPrivateKey || !config.vapidSubject) return false;
+  webpush.setVapidDetails(config.vapidSubject, config.vapidPublicKey, config.vapidPrivateKey);
+  webpushConfigured = true;
+  return true;
+}
+
+// 保存済みの購読(＝通知を有効にした質問受付ページ全員)にプッシュ通知を送る。
+// タブやブラウザを閉じていても端末に通知が届く。期限切れの購読は自動で削除する。
+async function sendPushToAllSubscribers(payload) {
+  if (!ensureWebpushConfigured()) {
+    console.error('VAPID鍵(VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY/VAPID_SUBJECT)が未設定のため、プッシュ通知を送れません。');
+    return;
+  }
+  let subs;
+  try {
+    subs = await listPushSubscriptionRows();
+  } catch (e) {
+    console.error('プッシュ購読一覧の取得に失敗しました:', e);
+    return;
+  }
+  const expired = [];
+  await Promise.all(
+    subs.map(async (sub) => {
+      try {
+        await webpush.sendNotification(
+          { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
+          JSON.stringify(payload)
+        );
+      } catch (e) {
+        const statusCode = e && e.statusCode;
+        if (statusCode === 404 || statusCode === 410) {
+          expired.push(sub.sheetRowNumber);
+        } else {
+          console.error('プッシュ通知の送信に失敗しました:', e && e.message ? e.message : e);
+        }
+      }
+    })
+  );
+  if (expired.length > 0) {
+    try {
+      await removePushSubscriptionRows(expired);
+    } catch (e) {
+      console.error('期限切れプッシュ購読の削除に失敗しました:', e);
+    }
+  }
 }
 
 // ============================================================
@@ -1209,6 +1367,24 @@ function buildChatPageHtml() {
     flex-shrink: 0;
   }
   .new-room-btn:hover { transform: scale(1.05); }
+  .push-enable-btn {
+    border: none;
+    background: rgba(255,255,255,0.22);
+    color: #fff;
+    font-size: 10.5px;
+    font-weight: 700;
+    border-radius: 8px;
+    padding: 6px 9px;
+    cursor: pointer;
+    font-family: inherit;
+    white-space: nowrap;
+    transition: transform 0.1s ease, background 0.2s ease;
+    flex-shrink: 0;
+  }
+  .push-enable-btn:hover { background: rgba(255,255,255,0.32); transform: scale(1.03); }
+  .push-enable-btn:active { transform: scale(0.96); }
+  .push-enable-btn:disabled { cursor: default; }
+  .push-enable-btn.push-on { background: rgba(255,255,255,0.14); }
   .room-list { flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 6px; }
   .room-list::-webkit-scrollbar { width: 6px; }
   .room-list::-webkit-scrollbar-track { background: transparent; }
@@ -1544,6 +1720,7 @@ function buildChatPageHtml() {
           <span class="subtitle">接客担当専用 ご質問受付</span>
         </div>
       </div>
+      <button type="button" id="pushEnableBtn" class="push-enable-btn" style="display:none;">🔔 通知を有効にする</button>
     </div>
   </div>
 
@@ -1651,6 +1828,103 @@ function buildChatPageHtml() {
     } else {
       document.title = baseTitle;
     }
+  }
+
+  // ===== ブラウザのプッシュ通知(タブや画面を閉じていても回答に気づける) =====
+  function urlBase64ToUint8Array(base64String) {
+    var padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+    var base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+    var rawData = window.atob(base64);
+    var outputArray = new Uint8Array(rawData.length);
+    for (var i = 0; i < rawData.length; i++) {
+      outputArray[i] = rawData.charCodeAt(i);
+    }
+    return outputArray;
+  }
+
+  function setPushButtonState(state) {
+    var btn = qs('pushEnableBtn');
+    if (!btn) return;
+    if (state === 'on') {
+      btn.style.display = 'inline-flex';
+      btn.textContent = '🔔 通知オン';
+      btn.disabled = true;
+      btn.classList.add('push-on');
+    } else if (state === 'denied') {
+      btn.style.display = 'inline-flex';
+      btn.textContent = '🔕 通知がブロックされています';
+      btn.disabled = true;
+    } else if (state === 'unsupported') {
+      btn.style.display = 'none';
+    } else {
+      btn.style.display = 'inline-flex';
+      btn.textContent = '🔔 通知を有効にする';
+      btn.disabled = false;
+      btn.classList.remove('push-on');
+    }
+  }
+
+  // ログイン後に呼ばれ、対応ブラウザであれば通知ボタンを表示する。
+  // すでに登録済みの端末では自動的に「通知オン」の表示にする。
+  function setupPushNotifications() {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window) || typeof Notification === 'undefined') {
+      setPushButtonState('unsupported');
+      return;
+    }
+    navigator.serviceWorker.register('./sw.js').then(function (reg) {
+      return reg.pushManager.getSubscription().then(function (existing) {
+        if (existing) {
+          setPushButtonState('on');
+        } else if (Notification.permission === 'denied') {
+          setPushButtonState('denied');
+        } else {
+          setPushButtonState('off');
+        }
+      });
+    }).catch(function (e) {
+      console.error('サービスワーカーの登録に失敗しました:', e);
+      setPushButtonState('unsupported');
+    });
+  }
+
+  function enablePushNotifications() {
+    Notification.requestPermission().then(function (permission) {
+      if (permission !== 'granted') {
+        setPushButtonState(permission === 'denied' ? 'denied' : 'off');
+        return;
+      }
+      return fetch('/api/push-public-key')
+        .then(function (res) { return res.json(); })
+        .then(function (keyData) {
+          if (!keyData || !keyData.publicKey) {
+            alert('通知の設定がまだ完了していません。管理者にご確認ください。');
+            return;
+          }
+          return navigator.serviceWorker.ready.then(function (reg) {
+            return reg.pushManager.subscribe({
+              userVisibleOnly: true,
+              applicationServerKey: urlBase64ToUint8Array(keyData.publicKey)
+            });
+          }).then(function (sub) {
+            return fetch('/api/push-subscribe', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'x-chat-password': getStoredPassword() },
+              body: JSON.stringify({ subscription: sub.toJSON ? sub.toJSON() : sub })
+            });
+          }).then(function () {
+            setPushButtonState('on');
+          });
+        });
+    }).catch(function (e) {
+      console.error('通知の登録に失敗しました:', e);
+      alert('通知の設定に失敗しました。もう一度お試しください。');
+      setPushButtonState('off');
+    });
+  }
+
+  var pushEnableBtnEl = qs('pushEnableBtn');
+  if (pushEnableBtnEl) {
+    pushEnableBtnEl.addEventListener('click', enablePushNotifications);
   }
 
   // ボタンを押したときに、プルルンと弾んで水が弾けるようなエフェクトを出す(全ボタン共通)
@@ -2031,6 +2305,7 @@ function buildChatPageHtml() {
     renderRoomDetail(null);
     input.focus();
     refreshRoomList();
+    setupPushNotifications();
   }
 
   function submitPassword() {
@@ -2989,6 +3264,53 @@ app.get('/cron/followup', async (req, res) => {
   }
 });
 
+// ブラウザのプッシュ通知(質問受付ページを閉じていても回答に気づける機能)用の
+// サービスワーカー。質問受付ページ(buildChatPageHtml)から './sw.js' として読み込まれる。
+// ※ shp-company.site側の静的ページ(qa_bot_index.html)で使う場合は、この内容を
+//   同じ内容のsw.jsというファイルとして、ページと同じフォルダに置く必要がある
+//   (サービスワーカーは、それを読み込んだページと同じ場所に置かないと動かないため)。
+const SW_JS_CONTENT = `self.addEventListener('install', function (event) {
+  self.skipWaiting();
+});
+
+self.addEventListener('activate', function (event) {
+  event.waitUntil(self.clients.claim());
+});
+
+self.addEventListener('push', function (event) {
+  var data = {};
+  try {
+    data = event.data ? event.data.json() : {};
+  } catch (e) {
+    data = { title: 'SHP 自動回答チャット', body: event.data ? event.data.text() : '新しいお知らせがあります。' };
+  }
+  var title = data.title || 'SHP 自動回答チャット';
+  var options = {
+    body: data.body || '新しいお知らせがあります。',
+    data: { url: data.url || '/' }
+  };
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+self.addEventListener('notificationclick', function (event) {
+  event.notification.close();
+  var url = (event.notification.data && event.notification.data.url) || '/';
+  event.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function (clientList) {
+      for (var i = 0; i < clientList.length; i++) {
+        var client = clientList[i];
+        if (client.url.indexOf(url) !== -1 && 'focus' in client) {
+          return client.focus();
+        }
+      }
+      if (clients.openWindow) {
+        return clients.openWindow(url);
+      }
+    })
+  );
+});
+`;
+
 // ---- 接客担当向け自動回答チャットページ（質問する側・SHP案件専用） ----
 app.get('/chat', (req, res) => {
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -3011,7 +3333,7 @@ function allowCors(req, res) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-chat-password, x-promoter-password');
 }
 
-['/api/ask-login', '/api/ask', '/api/ask-list', '/api/ask-status', '/api/ask-delete', '/api/ask-hide', '/api/promoter-login', '/api/promoter-pending', '/api/promoter-answer', '/api/promoter-delete'].forEach(
+['/api/ask-login', '/api/ask', '/api/ask-list', '/api/ask-status', '/api/ask-delete', '/api/ask-hide', '/api/promoter-login', '/api/promoter-pending', '/api/promoter-answer', '/api/promoter-delete', '/api/push-subscribe'].forEach(
   (path) => {
     app.options(path, (req, res) => {
       allowCors(req, res);
@@ -3019,6 +3341,38 @@ function allowCors(req, res) {
     });
   }
 );
+
+// Render側(/chat)の質問受付ページ用のサービスワーカー配信。
+app.get('/sw.js', (req, res) => {
+  res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+  res.send(SW_JS_CONTENT);
+});
+
+// プッシュ通知に使う公開鍵(VAPID公開鍵)をクライアントに渡す。公開鍵なので
+// パスワードでは保護しない(秘密鍵の方は環境変数のみに置き、絶対に公開しない)。
+app.get('/api/push-public-key', (req, res) => {
+  allowCors(req, res);
+  res.json({ publicKey: config.vapidPublicKey || '' });
+});
+
+// 質問受付ページでブラウザ通知を有効にした人の購読情報を保存する。
+app.post('/api/push-subscribe', express.json(), async (req, res) => {
+  allowCors(req, res);
+  if (!checkChatPassword(req)) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  try {
+    const subscription = req.body && req.body.subscription;
+    if (!subscription || !subscription.endpoint) {
+      return res.status(400).json({ error: 'subscription is required' });
+    }
+    await appendPushSubscriptionRow(subscription);
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('/api/push-subscribe エラー:', e);
+    res.status(500).json({ ok: false, error: 'internal_error' });
+  }
+});
 
 // ---- 接客担当側（質問する側） ----
 
@@ -3331,6 +3685,14 @@ app.post('/api/promoter-answer', express.json(), async (req, res) => {
       answeredBy: 'プロモーター(サイト管理画面)',
       answeredAt: new Date().toISOString(),
     });
+
+    // 質問受付ページを閉じていても気づけるよう、通知を有効にしている端末全員に
+    // ブラウザのプッシュ通知を送る(送信に失敗しても回答自体は完了させる)。
+    sendPushToAllSubscribers({
+      title: '質問に回答が届きました',
+      body: target.question.length > 40 ? target.question.slice(0, 40) + '…' : target.question,
+      url: 'https://shp-company.site/qa_bot/',
+    }).catch((e) => console.error('プッシュ通知の送信中にエラーが発生しました:', e));
 
     return res.json({ ok: true });
   } catch (e) {
