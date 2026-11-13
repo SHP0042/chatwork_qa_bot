@@ -1833,38 +1833,44 @@ function buildChatPageHtml() {
     color: var(--text);
   }
   .staff-gate-card { max-width: 400px; }
-  .staff-manage-link {
-    display: inline-block;
-    margin-top: 4px;
-    margin-bottom: 14px;
+  #staffPickSection { margin-bottom: 4px; }
+  /* 「.gate-card button」より詳しいセレクタにして、ボタンの共通スタイル(幅100%の
+     青いボタン)に上書きされて見た目が崩れないようにする。 */
+  .gate-card .staff-manage-link {
+    display: block;
+    width: auto;
+    margin: 10px auto 0;
+    padding: 4px;
     font-size: 12.5px;
+    font-weight: 500;
     color: var(--muted);
     text-decoration: underline;
+    text-align: center;
     cursor: pointer;
     background: none;
     border: none;
     font-family: inherit;
-    width: auto;
   }
   .staff-manage-box {
     display: none;
     text-align: left;
     border-top: 1px solid #eef1f6;
-    margin-top: 10px;
-    padding-top: 14px;
+    margin-top: 14px;
+    padding-top: 16px;
   }
   .staff-manage-box.open { display: block; }
-  .staff-manage-box h4 { font-size: 13px; margin: 0 0 8px; color: var(--text); }
-  .staff-manage-list { list-style: none; margin: 0 0 14px; padding: 0; max-height: 160px; overflow-y: auto; }
+  .staff-manage-box h4 { font-size: 13px; margin: 0 0 10px; color: var(--text); }
+  .staff-manage-list { list-style: none; margin: 0 0 16px; padding: 0; max-height: 160px; overflow-y: auto; }
   .staff-manage-list li {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 8px;
-    padding: 7px 0;
+    padding: 8px 0;
     border-bottom: 1px solid #f3f4f8;
     font-size: 13px;
   }
+  .staff-manage-list li span { overflow-wrap: anywhere; }
   .staff-manage-list li .staff-del-btn {
     border: none;
     background: #fdecea;
@@ -1872,38 +1878,25 @@ function buildChatPageHtml() {
     font-size: 11px;
     font-weight: 700;
     border-radius: 7px;
-    padding: 4px 8px;
+    padding: 5px 9px;
     cursor: pointer;
     font-family: inherit;
     width: auto;
     flex-shrink: 0;
   }
-  .staff-manage-empty { font-size: 12.5px; color: var(--muted); margin: 0 0 14px; }
-  .staff-add-row { display: flex; gap: 6px; margin-bottom: 4px; }
+  .staff-manage-empty { font-size: 13px; color: var(--muted); margin: 0 0 16px; line-height: 1.6; }
+  .staff-add-row { display: flex; flex-direction: column; gap: 10px; margin-bottom: 8px; }
   .staff-add-row input {
-    flex: 1;
-    min-width: 0;
-    padding: 9px 10px;
+    width: 100%;
+    padding: 11px 14px;
     border: 1px solid #dfe2ec;
-    border-radius: 9px;
-    font-size: 13.5px;
+    border-radius: 10px;
+    font-size: 15px;
     font-family: inherit;
     margin-bottom: 0;
   }
-  .staff-add-btn {
-    border: none;
-    background: var(--brand);
-    color: #fff;
-    font-size: 13px;
-    font-weight: 700;
-    border-radius: 9px;
-    padding: 0 14px;
-    cursor: pointer;
-    font-family: inherit;
-    width: auto;
-    flex-shrink: 0;
-  }
-  .staff-add-hint { font-size: 11.5px; color: var(--muted); margin: 6px 0 0; }
+  .gate-card .staff-add-btn { margin-top: 2px; }
+  .staff-add-hint { font-size: 11.5px; color: var(--muted); margin: 6px 0 0; line-height: 1.5; }
   .staff-gate-error { color: #d1403a; font-size: 12.5px; margin-top: 8px; min-height: 16px; }
 </style>
 </head>
@@ -1943,10 +1936,12 @@ function buildChatPageHtml() {
 
   <div id="staffGate" class="gate-wrap" style="display:none;">
     <div class="gate-card staff-gate-card">
-      <h2>あなたのお名前を選択してください</h2>
-      <select id="staffSelect"></select>
-      <div class="staff-manage-empty" id="staffEmptyMsg" style="display:none;">まだ担当者が登録されていません。下の「担当者の追加・削除」から登録してください。</div>
-      <button id="staffSelectConfirm">この名前で始める</button>
+      <div id="staffPickSection">
+        <h2>あなたのお名前を選択してください</h2>
+        <select id="staffSelect"></select>
+        <button id="staffSelectConfirm">この名前で始める</button>
+      </div>
+      <div class="staff-manage-empty" id="staffEmptyMsg" style="display:none;">まだ担当者が登録されていません。<br>下のフォームから最初の担当者を登録してください。</div>
       <div class="staff-gate-error" id="staffGateError"></div>
 
       <button type="button" class="staff-manage-link" id="staffManageToggle">担当者の追加・削除</button>
@@ -1955,8 +1950,8 @@ function buildChatPageHtml() {
         <ul class="staff-manage-list" id="staffManageList"></ul>
         <div class="staff-add-row">
           <input type="text" id="staffNewName" placeholder="名前" />
-          <input type="text" id="staffNewAccountId" placeholder="ChatworkアカウントID" inputmode="numeric" />
-          <button type="button" class="staff-add-btn" id="staffAddBtn">追加</button>
+          <input type="text" id="staffNewAccountId" placeholder="ChatworkアカウントID(数字)" inputmode="numeric" />
+          <button type="button" class="staff-add-btn" id="staffAddBtn">この内容で追加する</button>
         </div>
         <div class="staff-add-hint">ChatworkアカウントIDは、Chatworkのプロフィール画面に出ている数字のIDです。</div>
       </div>
@@ -2581,18 +2576,26 @@ function buildChatPageHtml() {
     }
   }
 
+  // 担当者が1人も登録されていないときは「名前を選ぶ」画面自体を表示せず、
+  // 登録フォームだけをはっきり見せる(選択と登録が混ざって分かりにくくならないように)。
+  // 1人でも登録されていれば、通常は「名前を選ぶ」画面を出し、登録・削除は
+  // 下の小さなリンクから開く形にする。
+  var staffPickSection = qs('staffPickSection');
+
   function populateStaffSelect(list) {
+    var hasStaff = !!(list && list.length > 0);
+
+    if (staffPickSection) staffPickSection.style.display = hasStaff ? 'block' : 'none';
+    if (staffEmptyMsg) staffEmptyMsg.style.display = hasStaff ? 'none' : 'block';
+    if (staffManageToggle) staffManageToggle.style.display = hasStaff ? 'block' : 'none';
+    // 担当者が0人になったときだけ、登録フォームを強制的に開く(他は、ユーザーが
+    // 自分で開閉した状態をそのままにしておく。追加・削除のたびに勝手に
+    // 閉じてしまうと連続で操作しづらいため)。
+    if (staffManageBox && !hasStaff) staffManageBox.classList.add('open');
+
     if (!staffSelect) return;
     staffSelect.innerHTML = '';
-    if (!list || list.length === 0) {
-      if (staffEmptyMsg) staffEmptyMsg.style.display = 'block';
-      staffSelect.style.display = 'none';
-      if (staffSelectConfirm) staffSelectConfirm.disabled = true;
-      return;
-    }
-    if (staffEmptyMsg) staffEmptyMsg.style.display = 'none';
-    staffSelect.style.display = '';
-    if (staffSelectConfirm) staffSelectConfirm.disabled = false;
+    if (!hasStaff) return;
     list.forEach(function (s) {
       var opt = document.createElement('option');
       opt.value = s.accountId;
@@ -2643,7 +2646,6 @@ function buildChatPageHtml() {
         staffListCache = list;
         populateStaffSelect(list);
         populateStaffManageList(list);
-        if (staffManageBox && list.length === 0) staffManageBox.classList.add('open');
       })
       .catch(function () {
         if (staffGateError) staffGateError.textContent = '担当者一覧の取得に失敗しました。もう一度お試しください。';
@@ -2670,7 +2672,6 @@ function buildChatPageHtml() {
           chatWrap.style.display = 'none';
           staffGateWrap.style.display = 'flex';
           if (staffGateError) staffGateError.textContent = '';
-          if (staffManageBox && list.length === 0) staffManageBox.classList.add('open');
         }
       })
       .catch(function () {
