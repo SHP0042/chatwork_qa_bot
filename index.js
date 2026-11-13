@@ -961,13 +961,9 @@ async function handleHolderReply({ replyTarget, body, senderId, roomId, messageI
 }
 
 async function runFollowupCheck({ log = console.log } = {}) {
-  // 土日・祝日はChatworkへの催促通知を送らない。cron-job.org等から呼ばれても
-  // その日は何もせずに終わる(翌営業日のチェックで改めて対象になる)。
-  if (!isBusinessDay(new Date())) {
-    log('土日・祝日のため、催促チェックをスキップしました。');
-    return { reminded: 0, checked: 0, skipped: 'not-business-day' };
-  }
-
+  // 土日・祝日であっても関係なく、期限(質問が届いてから既定の日数が経った
+  // 翌日の朝9時以降)を過ぎていれば催促を送る。cron-job.org等から土日祝も
+  // 休まず呼び出され続けている前提。
   const pending = await listPendingRows();
   let reminded = 0;
   for (const p of pending) {
@@ -1463,7 +1459,7 @@ function buildChatPageHtml() {
   .input-inner button:disabled { opacity: 0.5; cursor: default; }
   .input-inner button svg { width: 17px; height: 17px; fill: #fff; }
   .input-hint { text-align: center; font-size: 11px; color: #b7bcc9; margin-top: 8px; }
-  /* ボタン共通の「水っぽい」質感と、押すとプルルンと水がはじけるような演出(より透明感とプルルン感を強めた版) */
+  /* ボタン共通の「水っぽい」質感と、押すとキラキラ輝きながら軽くプルンと弾むような演出(弾力は控えめに調整した版) */
   button { position: relative; overflow: visible; isolation: isolate; }
   button::before {
     content: '';
@@ -1492,15 +1488,12 @@ function buildChatPageHtml() {
   }
   button:active::before { opacity: 0.28; }
   button:active::after { opacity: 0.95; }
-  button.btn-jelly { animation: btnJelly 0.64s cubic-bezier(.36,1.5,.4,1) both; }
+  button.btn-jelly { animation: btnJelly 0.48s cubic-bezier(.36,1.25,.46,1) both; }
   @keyframes btnJelly {
     0%   { transform: scale(1, 1); }
-    12%  { transform: scale(0.76, 1.22); }
-    28%  { transform: scale(1.18, 0.8); }
-    44%  { transform: scale(0.9, 1.13); }
-    60%  { transform: scale(1.08, 0.93); }
-    75%  { transform: scale(0.96, 1.05); }
-    88%  { transform: scale(1.02, 0.985); }
+    20%  { transform: scale(0.93, 1.07); }
+    45%  { transform: scale(1.045, 0.96); }
+    70%  { transform: scale(0.98, 1.015); }
     100% { transform: scale(1, 1); }
   }
   .btn-splash {
@@ -1519,19 +1512,22 @@ function buildChatPageHtml() {
     45%  { opacity: 0.45; }
     100% { transform: scale(1.55); opacity: 0; }
   }
-  .btn-drop {
+  .btn-sparkle {
     position: absolute;
-    width: 7px;
-    height: 7px;
-    margin: -3.5px 0 0 -3.5px;
-    border-radius: 50%;
+    width: 11px;
+    height: 11px;
+    margin: -5.5px 0 0 -5.5px;
     pointer-events: none;
-    background: radial-gradient(circle at 30% 30%, rgba(255,255,255,0.85), rgba(160,215,255,0.4) 55%, rgba(160,215,255,0) 100%);
-    animation: btnDrop 0.64s cubic-bezier(.22,.7,.32,1) forwards;
+    background: radial-gradient(circle, #ffffff 0%, #ffe9a8 45%, rgba(255,233,168,0) 75%);
+    clip-path: polygon(50% 0%, 62% 38%, 100% 50%, 62% 62%, 50% 100%, 38% 62%, 0% 50%, 38% 38%);
+    box-shadow: 0 0 7px rgba(255,233,168,0.95);
+    animation: btnSparkle 1.05s cubic-bezier(.22,.61,.36,1) forwards;
   }
-  @keyframes btnDrop {
-    0%   { transform: translate(0,0) scale(var(--ds,1)); opacity: 0.8; }
-    100% { transform: translate(var(--dx,0px),var(--dy,0px)) scale(calc(var(--ds,1) * 0.15)); opacity: 0; }
+  @keyframes btnSparkle {
+    0%   { transform: translate(0,0) scale(0) rotate(0deg); opacity: 0; }
+    12%  { transform: translate(calc(var(--dx,0px) * 0.15), calc(var(--dy,0px) * 0.15)) scale(calc(var(--ds,1) * 1.25)) rotate(calc(var(--rot,70deg) * 0.2)); opacity: 1; }
+    60%  { transform: translate(calc(var(--dx,0px) * 0.6), calc(var(--dy,0px) * 0.6)) scale(var(--ds,1)) rotate(calc(var(--rot,70deg) * 0.65)); opacity: 1; }
+    100% { transform: translate(var(--dx,0px),var(--dy,0px)) scale(calc(var(--ds,1) * 0.2)) rotate(var(--rot,70deg)); opacity: 0; }
   }
 </style>
 </head>
@@ -1600,6 +1596,62 @@ function buildChatPageHtml() {
 
 <script>
 (function () {
+  // ===== 回答が届いたことを分かりやすく知らせる(音を鳴らす＋タブのタイトルを光らせる) =====
+  var baseTitle = document.title;
+  var audioCtx = null;
+  function ensureAudioCtx() {
+    try {
+      if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      } else if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+      }
+    } catch (e) { /* 音が使えない環境では無視 */ }
+  }
+  document.addEventListener('pointerdown', ensureAudioCtx, true);
+
+  // 回答が届いたときに鳴らす、短く控えめな通知音(ピンポン)
+  function playNotifySound() {
+    if (!audioCtx) return;
+    try {
+      var now = audioCtx.currentTime;
+      [660, 880].forEach(function (freq, i) {
+        var osc = audioCtx.createOscillator();
+        var gain = audioCtx.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = freq;
+        var t0 = now + i * 0.12;
+        gain.gain.setValueAtTime(0, t0);
+        gain.gain.linearRampToValueAtTime(0.2, t0 + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.3);
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start(t0);
+        osc.stop(t0 + 0.32);
+      });
+    } catch (e) { /* 無視 */ }
+  }
+
+  // 未読の回答がある間、ブラウザのタブのタイトルを点滅させて気づきやすくする
+  var titleFlashTimer = null;
+  function updateTitleNotice() {
+    var unreadCount = rooms.filter(function (r) { return r.unread; }).length;
+    if (titleFlashTimer) {
+      clearInterval(titleFlashTimer);
+      titleFlashTimer = null;
+    }
+    if (unreadCount > 0) {
+      var showingAlert = true;
+      document.title = '🔔 回答あり(' + unreadCount + '件)';
+      titleFlashTimer = setInterval(function () {
+        showingAlert = !showingAlert;
+        document.title = showingAlert ? ('🔔 回答あり(' + unreadCount + '件)') : baseTitle;
+      }, 1200);
+    } else {
+      document.title = baseTitle;
+    }
+  }
+
   // ボタンを押したときに、プルルンと弾んで水が弾けるようなエフェクトを出す(全ボタン共通)
   (function attachButtonSplash() {
     document.addEventListener('pointerdown', function (e) {
@@ -1609,13 +1661,13 @@ function buildChatPageHtml() {
       var x = (typeof e.clientX === 'number' && e.clientX) ? e.clientX - rect.left : rect.width / 2;
       var y = (typeof e.clientY === 'number' && e.clientY) ? e.clientY - rect.top : rect.height / 2;
 
-      // ボタン自体がプルルンと弾む(前より大きく、揺れ回数も増やした)
+      // ボタン自体が軽くプルンと弾む(弾力は控えめに)
       btn.classList.remove('btn-jelly');
       void btn.offsetWidth;
       btn.classList.add('btn-jelly');
-      window.setTimeout(function () { btn.classList.remove('btn-jelly'); }, 640);
+      window.setTimeout(function () { btn.classList.remove('btn-jelly'); }, 480);
 
-      // 水の輪がふわっと広がって消える(より透明に、より大きく)
+      // 水の輪がふわっと広がって消える
       var size = Math.max(rect.width, rect.height) * 1.5;
       var splash = document.createElement('span');
       splash.className = 'btn-splash';
@@ -1627,24 +1679,25 @@ function buildChatPageHtml() {
         if (splash.parentNode) splash.parentNode.removeChild(splash);
       }, 800);
 
-      // 水しぶきが数滴、弾けて飛び散る(粒の大きさをランダムに、より透明に)
-      var dropCount = 7;
-      for (var i = 0; i < dropCount; i++) {
-        var angle = (Math.PI * 2 * i) / dropCount + (Math.random() - 0.5) * 0.6;
+      // キラキラした粒が数個、弾けて飛び散る(大きさや回転をランダムに)
+      var sparkleCount = 7;
+      for (var i = 0; i < sparkleCount; i++) {
+        var angle = (Math.PI * 2 * i) / sparkleCount + (Math.random() - 0.5) * 0.6;
         var dist = Math.max(rect.width, rect.height) * (0.6 + Math.random() * 0.4);
-        var drop = document.createElement('span');
-        drop.className = 'btn-drop';
-        drop.style.left = x + 'px';
-        drop.style.top = y + 'px';
-        drop.style.setProperty('--dx', (Math.cos(angle) * dist).toFixed(1) + 'px');
-        drop.style.setProperty('--dy', (Math.sin(angle) * dist).toFixed(1) + 'px');
-        drop.style.setProperty('--ds', (0.7 + Math.random() * 0.7).toFixed(2));
-        btn.appendChild(drop);
-        (function (d) {
+        var sparkle = document.createElement('span');
+        sparkle.className = 'btn-sparkle';
+        sparkle.style.left = x + 'px';
+        sparkle.style.top = y + 'px';
+        sparkle.style.setProperty('--dx', (Math.cos(angle) * dist).toFixed(1) + 'px');
+        sparkle.style.setProperty('--dy', (Math.sin(angle) * dist).toFixed(1) + 'px');
+        sparkle.style.setProperty('--ds', (0.7 + Math.random() * 0.7).toFixed(2));
+        sparkle.style.setProperty('--rot', (Math.random() > 0.5 ? 1 : -1) * (50 + Math.random() * 70) + 'deg');
+        btn.appendChild(sparkle);
+        (function (s) {
           window.setTimeout(function () {
-            if (d.parentNode) d.parentNode.removeChild(d);
-          }, 660);
-        })(drop);
+            if (s.parentNode) s.parentNode.removeChild(s);
+          }, 1080);
+        })(sparkle);
       }
     }, true);
   })();
@@ -1821,6 +1874,7 @@ function buildChatPageHtml() {
       empty.className = 'room-empty';
       empty.textContent = 'まだ質問がありません。';
       roomListEl.appendChild(empty);
+      updateTitleNotice();
       return;
     }
     rooms.forEach(function (r) {
@@ -1877,6 +1931,7 @@ function buildChatPageHtml() {
 
       roomListEl.appendChild(row);
     });
+    updateTitleNotice();
   }
 
   // 確認中の質問に対して、チャット欄の下に「確認中です」カード(取消ボタン付き)を出す。
@@ -2123,6 +2178,7 @@ function buildChatPageHtml() {
       }
       if (room.status === 'answered') {
         showToast('回答が届きました：' + truncateText(room.question, 26));
+        playNotifySound();
       }
     });
   }
@@ -2487,7 +2543,7 @@ function buildPromoterAdminHtml() {
   .q-card button.delete-btn:disabled { opacity: 0.5; cursor: default; }
   .q-card .q-sent-note { font-size: 12px; color: #2a9d5c; margin-top: 4px; text-align: right; }
   .q-card .q-error-note { font-size: 12px; color: #d1403a; margin-top: 4px; text-align: right; }
-  /* ボタン共通の「水っぽい」質感と、押すとプルルンと水がはじけるような演出(より透明感とプルルン感を強めた版) */
+  /* ボタン共通の「水っぽい」質感と、押すとキラキラ輝きながら軽くプルンと弾むような演出(弾力は控えめに調整した版) */
   button { position: relative; overflow: visible; isolation: isolate; }
   button::before {
     content: '';
@@ -2516,15 +2572,12 @@ function buildPromoterAdminHtml() {
   }
   button:active::before { opacity: 0.28; }
   button:active::after { opacity: 0.95; }
-  button.btn-jelly { animation: btnJelly 0.64s cubic-bezier(.36,1.5,.4,1) both; }
+  button.btn-jelly { animation: btnJelly 0.48s cubic-bezier(.36,1.25,.46,1) both; }
   @keyframes btnJelly {
     0%   { transform: scale(1, 1); }
-    12%  { transform: scale(0.76, 1.22); }
-    28%  { transform: scale(1.18, 0.8); }
-    44%  { transform: scale(0.9, 1.13); }
-    60%  { transform: scale(1.08, 0.93); }
-    75%  { transform: scale(0.96, 1.05); }
-    88%  { transform: scale(1.02, 0.985); }
+    20%  { transform: scale(0.93, 1.07); }
+    45%  { transform: scale(1.045, 0.96); }
+    70%  { transform: scale(0.98, 1.015); }
     100% { transform: scale(1, 1); }
   }
   .btn-splash {
@@ -2543,19 +2596,22 @@ function buildPromoterAdminHtml() {
     45%  { opacity: 0.45; }
     100% { transform: scale(1.55); opacity: 0; }
   }
-  .btn-drop {
+  .btn-sparkle {
     position: absolute;
-    width: 7px;
-    height: 7px;
-    margin: -3.5px 0 0 -3.5px;
-    border-radius: 50%;
+    width: 11px;
+    height: 11px;
+    margin: -5.5px 0 0 -5.5px;
     pointer-events: none;
-    background: radial-gradient(circle at 30% 30%, rgba(255,255,255,0.85), rgba(160,215,255,0.4) 55%, rgba(160,215,255,0) 100%);
-    animation: btnDrop 0.64s cubic-bezier(.22,.7,.32,1) forwards;
+    background: radial-gradient(circle, #ffffff 0%, #ffe9a8 45%, rgba(255,233,168,0) 75%);
+    clip-path: polygon(50% 0%, 62% 38%, 100% 50%, 62% 62%, 50% 100%, 38% 62%, 0% 50%, 38% 38%);
+    box-shadow: 0 0 7px rgba(255,233,168,0.95);
+    animation: btnSparkle 1.05s cubic-bezier(.22,.61,.36,1) forwards;
   }
-  @keyframes btnDrop {
-    0%   { transform: translate(0,0) scale(var(--ds,1)); opacity: 0.8; }
-    100% { transform: translate(var(--dx,0px),var(--dy,0px)) scale(calc(var(--ds,1) * 0.15)); opacity: 0; }
+  @keyframes btnSparkle {
+    0%   { transform: translate(0,0) scale(0) rotate(0deg); opacity: 0; }
+    12%  { transform: translate(calc(var(--dx,0px) * 0.15), calc(var(--dy,0px) * 0.15)) scale(calc(var(--ds,1) * 1.25)) rotate(calc(var(--rot,70deg) * 0.2)); opacity: 1; }
+    60%  { transform: translate(calc(var(--dx,0px) * 0.6), calc(var(--dy,0px) * 0.6)) scale(var(--ds,1)) rotate(calc(var(--rot,70deg) * 0.65)); opacity: 1; }
+    100% { transform: translate(var(--dx,0px),var(--dy,0px)) scale(calc(var(--ds,1) * 0.2)) rotate(var(--rot,70deg)); opacity: 0; }
   }
 </style>
 </head>
@@ -2603,13 +2659,13 @@ function buildPromoterAdminHtml() {
       var x = (typeof e.clientX === 'number' && e.clientX) ? e.clientX - rect.left : rect.width / 2;
       var y = (typeof e.clientY === 'number' && e.clientY) ? e.clientY - rect.top : rect.height / 2;
 
-      // ボタン自体がプルルンと弾む(前より大きく、揺れ回数も増やした)
+      // ボタン自体が軽くプルンと弾む(弾力は控えめに)
       btn.classList.remove('btn-jelly');
       void btn.offsetWidth;
       btn.classList.add('btn-jelly');
-      window.setTimeout(function () { btn.classList.remove('btn-jelly'); }, 640);
+      window.setTimeout(function () { btn.classList.remove('btn-jelly'); }, 480);
 
-      // 水の輪がふわっと広がって消える(より透明に、より大きく)
+      // 水の輪がふわっと広がって消える
       var size = Math.max(rect.width, rect.height) * 1.5;
       var splash = document.createElement('span');
       splash.className = 'btn-splash';
@@ -2621,24 +2677,25 @@ function buildPromoterAdminHtml() {
         if (splash.parentNode) splash.parentNode.removeChild(splash);
       }, 800);
 
-      // 水しぶきが数滴、弾けて飛び散る(粒の大きさをランダムに、より透明に)
-      var dropCount = 7;
-      for (var i = 0; i < dropCount; i++) {
-        var angle = (Math.PI * 2 * i) / dropCount + (Math.random() - 0.5) * 0.6;
+      // キラキラした粒が数個、弾けて飛び散る(大きさや回転をランダムに)
+      var sparkleCount = 7;
+      for (var i = 0; i < sparkleCount; i++) {
+        var angle = (Math.PI * 2 * i) / sparkleCount + (Math.random() - 0.5) * 0.6;
         var dist = Math.max(rect.width, rect.height) * (0.6 + Math.random() * 0.4);
-        var drop = document.createElement('span');
-        drop.className = 'btn-drop';
-        drop.style.left = x + 'px';
-        drop.style.top = y + 'px';
-        drop.style.setProperty('--dx', (Math.cos(angle) * dist).toFixed(1) + 'px');
-        drop.style.setProperty('--dy', (Math.sin(angle) * dist).toFixed(1) + 'px');
-        drop.style.setProperty('--ds', (0.7 + Math.random() * 0.7).toFixed(2));
-        btn.appendChild(drop);
-        (function (d) {
+        var sparkle = document.createElement('span');
+        sparkle.className = 'btn-sparkle';
+        sparkle.style.left = x + 'px';
+        sparkle.style.top = y + 'px';
+        sparkle.style.setProperty('--dx', (Math.cos(angle) * dist).toFixed(1) + 'px');
+        sparkle.style.setProperty('--dy', (Math.sin(angle) * dist).toFixed(1) + 'px');
+        sparkle.style.setProperty('--ds', (0.7 + Math.random() * 0.7).toFixed(2));
+        sparkle.style.setProperty('--rot', (Math.random() > 0.5 ? 1 : -1) * (50 + Math.random() * 70) + 'deg');
+        btn.appendChild(sparkle);
+        (function (s) {
           window.setTimeout(function () {
-            if (d.parentNode) d.parentNode.removeChild(d);
-          }, 660);
-        })(drop);
+            if (s.parentNode) s.parentNode.removeChild(s);
+          }, 1080);
+        })(sparkle);
       }
     }, true);
   })();
