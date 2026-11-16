@@ -3634,6 +3634,14 @@ function buildPromoterAdminHtml() {
     font-size: 12.5px; color: var(--muted); background: #f6f7fb; border: 1px dashed #dfe2ec;
     border-radius: 8px; padding: 8px 10px; margin: -4px 0 12px; white-space: pre-wrap; line-height: 1.6;
   }
+  .q-card .q-auto-answered-label { font-weight: 700; margin-bottom: 4px; }
+  .q-card .q-auto-answered-note .info-box {
+    background: #fff; border-left: 3px solid var(--brand); border-radius: 8px;
+    padding: 8px 10px; margin: 6px 0;
+  }
+  .q-card .q-auto-answered-note .info-box:first-child { margin-top: 0; }
+  .q-card .q-auto-answered-note .info-box:last-child { margin-bottom: 0; }
+  .q-card .q-auto-answered-note .info-title { font-weight: 700; margin: 6px 0 2px; }
   .q-card .q-pdf-link {
     display: inline-block;
     margin: -4px 0 12px;
@@ -4049,6 +4057,19 @@ function buildPromoterAdminHtml() {
     return u.indexOf('data:application/pdf') === 0 || u.indexOf('/file/d/') !== -1;
   }
 
+  // 「すでに自動回答済みの部分」には、Q&A表の内容がそのまま入っており、
+  // チャットワーク独自の[info]...[/info]のような装飾タグが混ざっていることがある。
+  // タグのまま表示すると読みにくいので、見やすい形(枠で囲む等)に変換する。
+  function formatAutoAnswerHtml(text) {
+    var div = document.createElement('div');
+    div.textContent = text == null ? '' : String(text);
+    var escaped = div.innerHTML;
+    escaped = escaped.replace(/\[info\]([\s\S]*?)\[\/info\]/gi, '<div class="info-box">$1</div>');
+    escaped = escaped.replace(/\[title\]([\s\S]*?)\[\/title\]/gi, '<div class="info-title">$1</div>');
+    escaped = escaped.replace(/\[\/?[a-zA-Z][a-zA-Z0-9_:=]*\]/g, '');
+    return escaped;
+  }
+
   function getStoredPassword() {
     try { return window.sessionStorage.getItem(STORAGE_KEY) || ''; } catch (e) { return ''; }
   }
@@ -4412,7 +4433,13 @@ function buildPromoterAdminHtml() {
       if (item.autoAnsweredText) {
         var autoNote = document.createElement('div');
         autoNote.className = 'q-auto-answered-note';
-        autoNote.textContent = 'すでに自動回答済みの部分:\n' + item.autoAnsweredText;
+        var autoLabel = document.createElement('div');
+        autoLabel.className = 'q-auto-answered-label';
+        autoLabel.textContent = 'すでに自動回答済みの部分:';
+        autoNote.appendChild(autoLabel);
+        var autoBody = document.createElement('div');
+        autoBody.innerHTML = formatAutoAnswerHtml(item.autoAnsweredText);
+        autoNote.appendChild(autoBody);
         card.appendChild(autoNote);
       }
 
