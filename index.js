@@ -345,6 +345,12 @@ async function sheetTabExists(title) {
   return meta.data.sheets.some((s) => s.properties.title === title);
 }
 
+// 「Q＆A専用」シートは、A〜C列が担当者一覧(担当/担当者名/チャットワークID)、
+// D列以降がこのpendingデータという、1つのタブを2つの表で共有するレイアウトになっている
+// (ユーザーがA列の前に3列挿入したため、元々A〜P列にあったこのデータは自動的に
+// D〜S列にずれている)。そのため読み書きはすべて「D:S」のように列を指定した範囲で行い、
+// 追加(append)は必ずinsertDataOption: 'OVERWRITE'を使う。INSERT_ROWSを使うと、
+// 行の挿入によってA〜C列の担当者一覧の行がずれてしまうため絶対に使わないこと。
 const PENDING_HEADERS = [
   'ID',
   '質問',
@@ -362,7 +368,7 @@ const PENDING_HEADERS = [
   '質問画像URL',
   '回答画像URL',
   '自動回答済み部分',
-];
+]; // D〜S列に対応(上から順にD列,E列...)
 
 // シートが無い場合でも、勝手に新しいタブを作ることはしない(意図しないタブが
 // スプレッドシートに増えてしまうため)。見つからない場合はエラーにして、
@@ -504,11 +510,12 @@ async function appendPendingRow(entry) {
     entry.answerImageUrl || '',
     entry.autoAnsweredText || '',
   ];
+  // D:S列に限定し、OVERWRITEで追加する(INSERT_ROWSだとA〜C列の担当者一覧がずれてしまう)。
   await sheets.spreadsheets.values.append({
     spreadsheetId: config.sheetId,
-    range: `${config.pendingSheetName}`,
+    range: `${config.pendingSheetName}!D:S`,
     valueInputOption: 'USER_ENTERED',
-    insertDataOption: 'INSERT_ROWS',
+    insertDataOption: 'OVERWRITE',
     requestBody: { values: [row] },
   });
   return id;
@@ -519,7 +526,7 @@ async function listPendingRows() {
   const sheets = await getSheets();
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: config.sheetId,
-    range: `${config.pendingSheetName}`,
+    range: `${config.pendingSheetName}!D:S`,
   });
   const values = res.data.values || [];
   const rows = [];
@@ -551,15 +558,17 @@ async function listPendingRows() {
 
 async function updatePendingRow(sheetRowNumber, updates) {
   const sheets = await getSheets();
+  // 「Q＆A専用」シートのA〜C列は担当者一覧用のため、pendingデータの列は
+  // D列以降にずれている(status=K列、answer=N列、など)。
   const colMap = {
-    status: 'H',
-    reminded: 'J',
-    answer: 'K',
-    answeredBy: 'L',
-    answeredAt: 'M',
-    questionImageUrl: 'N',
-    answerImageUrl: 'O',
-    autoAnsweredText: 'P',
+    status: 'K',
+    reminded: 'M',
+    answer: 'N',
+    answeredBy: 'O',
+    answeredAt: 'P',
+    questionImageUrl: 'Q',
+    answerImageUrl: 'R',
+    autoAnsweredText: 'S',
   };
   const data = Object.entries(updates).map(([key, value]) => ({
     range: `${config.pendingSheetName}!${colMap[key]}${sheetRowNumber}`,
@@ -713,38 +722,35 @@ async function sendPushToAllSubscribers(payload) {
 }
 
 // ============================================================
-// 接客担当スタッフの一覧(質問受付ページで名前を選んでもらい、回答が来たときに
-// Chatworkでその人にTOを付けて通知するために使う)。サイト内から追加・削除できる。
+// 担当者一覧(接客担当・プロモーターの両方)。
+// 「Q＆A専用」シートのA〜C列(担当/担当者名/チャットワークID)に、ユーザーの希望で
+// 1つにまとめている。D列以降のpendingデータ(質問の保留管理)とは完全に独立した表として
+// 同じタブを共有しているだけなので、読み書きは必ずA:C列に限定し、
+// 追加はOVERWRITE(INSERT_ROWSは使わない。使うとD列以降のpending行がずれてしまう)、
+// 削除は行ごと消さずA〜C列だけをclearする(行削除するとD列以降の質問データも消えてしまう)。
+// A列の値で「接客担当」か「プロモーター」かを区別する。
 // ============================================================
-const STAFF_HEADERS = ['名前', 'ChatworkアカウントID'];
-
-// シートが無い場合でも、勝手に新しいタブを作ることはしない(意図しないタブが
-// スプレッドシートに増えてしまうため)。見つからない場合はエラーにして、
-// シート名の設定を確認してもらう。
-async function ensureStaffSheetExists() {
-  const title = config.staffSheetName;
-  const exists = await sheetTabExists(title);
-  if (!exists) {
-    throw new Error(`スプレッドシートに「${title}」という名前のシートが見つかりません。STAFF_SHEET_NAMEの設定、またはシート名をご確認ください。`);
-  }
-}
+const STAFF_HEADERS = ['担当', '担当者名', 'チャットワークID']; // A〜C列
+const STAFF_ROLE_LABEL = '質問者';
+const PROMOTER_ROLE_LABEL = 'プロモーター';
 
 async function listStaffMembers() {
-  await ensureStaffSheetExists();
+  await ensurePendingSheetExists();
   const sheets = await getSheets();
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: config.sheetId,
-    range: `${config.staffSheetName}`,
+    range: `${config.pendingSheetName}!A:C`,
   });
   const values = res.data.values || [];
   const rows = [];
   for (let i = 1; i < values.length; i++) {
     const r = values[i];
-    if (!r[1]) continue; // アカウントIDが無い行は無視
+    if ((r[0] || '').trim() !== STAFF_ROLE_LABEL) continue;
+    if (!r[2]) continue; // アカウントIDが無い行は無視
     rows.push({
       sheetRowNumber: i + 1,
-      name: r[0] || '',
-      accountId: String(r[1]).trim(),
+      name: r[1] || '',
+      accountId: String(r[2]).trim(),
     });
   }
   return rows;
@@ -752,14 +758,14 @@ async function listStaffMembers() {
 
 // 同じアカウントIDが既にあれば名前だけ更新し、無ければ新しい行を追加する。
 async function upsertStaffMember(name, accountId) {
-  await ensureStaffSheetExists();
+  await ensurePendingSheetExists();
   const sheets = await getSheets();
   const existing = await listStaffMembers();
   const match = existing.find((r) => r.accountId === accountId);
   if (match) {
     await sheets.spreadsheets.values.update({
       spreadsheetId: config.sheetId,
-      range: `${config.staffSheetName}!A${match.sheetRowNumber}`,
+      range: `${config.pendingSheetName}!B${match.sheetRowNumber}`,
       valueInputOption: 'USER_ENTERED',
       requestBody: { values: [[name]] },
     });
@@ -767,72 +773,49 @@ async function upsertStaffMember(name, accountId) {
   }
   await sheets.spreadsheets.values.append({
     spreadsheetId: config.sheetId,
-    range: `${config.staffSheetName}`,
+    range: `${config.pendingSheetName}!A:C`,
     valueInputOption: 'USER_ENTERED',
-    insertDataOption: 'INSERT_ROWS',
-    requestBody: { values: [[name, accountId]] },
+    insertDataOption: 'OVERWRITE',
+    requestBody: { values: [[STAFF_ROLE_LABEL, name, accountId]] },
   });
 }
 
 async function removeStaffMember(accountId) {
-  const sheets = await getSheets();
   const existing = await listStaffMembers();
   const match = existing.find((r) => r.accountId === accountId);
   if (!match) return;
-  const tabs = await listAllSheetTabs();
-  const tab = tabs.find((t) => t.title === config.staffSheetName);
-  if (!tab) return;
-  await sheets.spreadsheets.batchUpdate({
+  const sheets = await getSheets();
+  // 行ごと削除すると同じ行のD列以降(質問データ)まで消えてしまうため、
+  // A〜C列だけを空にする(行自体は削除しない)。
+  await sheets.spreadsheets.values.clear({
     spreadsheetId: config.sheetId,
-    requestBody: {
-      requests: [{
-        deleteDimension: {
-          range: {
-            sheetId: Number(tab.gid),
-            dimension: 'ROWS',
-            startIndex: match.sheetRowNumber - 1,
-            endIndex: match.sheetRowNumber,
-          },
-        },
-      }],
-    },
+    range: `${config.pendingSheetName}!A${match.sheetRowNumber}:C${match.sheetRowNumber}`,
   });
 }
 
 // ============================================================
-// プロモーター(回答者)の一覧(回答管理ページで名前を選んでもらい、新着の質問を
-// その人たちにTOを付けて知らせるために使う)。接客担当の一覧(Bot_Staff)とは
-// 完全に別のシート・別の候補になる。サイト内から追加・削除できる。
+// プロモーター(回答者)の一覧。接客担当と同じ「Q＆A専用」シートのA〜C列を共有し、
+// A列の値が「プロモーター」の行だけを見る。考え方・注意点は上の接客担当と同じ。
 // ============================================================
-const PROMOTER_STAFF_HEADERS = ['名前', 'ChatworkアカウントID'];
-
-// シートが無い場合でも、勝手に新しいタブを作ることはしない(意図しないタブが
-// スプレッドシートに増えてしまうため)。見つからない場合はエラーにして、
-// シート名の設定を確認してもらう。
-async function ensurePromoterStaffSheetExists() {
-  const title = config.promoterStaffSheetName;
-  const exists = await sheetTabExists(title);
-  if (!exists) {
-    throw new Error(`スプレッドシートに「${title}」という名前のシートが見つかりません。PROMOTER_STAFF_SHEET_NAMEの設定、またはシート名をご確認ください。`);
-  }
-}
+const PROMOTER_STAFF_HEADERS = ['担当', '担当者名', 'チャットワークID']; // A〜C列(接客担当と共有)
 
 async function listPromoterStaffMembers() {
-  await ensurePromoterStaffSheetExists();
+  await ensurePendingSheetExists();
   const sheets = await getSheets();
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: config.sheetId,
-    range: `${config.promoterStaffSheetName}`,
+    range: `${config.pendingSheetName}!A:C`,
   });
   const values = res.data.values || [];
   const rows = [];
   for (let i = 1; i < values.length; i++) {
     const r = values[i];
-    if (!r[1]) continue; // アカウントIDが無い行は無視
+    if ((r[0] || '').trim() !== PROMOTER_ROLE_LABEL) continue;
+    if (!r[2]) continue; // アカウントIDが無い行は無視
     rows.push({
       sheetRowNumber: i + 1,
-      name: r[0] || '',
-      accountId: String(r[1]).trim(),
+      name: r[1] || '',
+      accountId: String(r[2]).trim(),
     });
   }
   return rows;
@@ -840,14 +823,14 @@ async function listPromoterStaffMembers() {
 
 // 同じアカウントIDが既にあれば名前だけ更新し、無ければ新しい行を追加する。
 async function upsertPromoterStaffMember(name, accountId) {
-  await ensurePromoterStaffSheetExists();
+  await ensurePendingSheetExists();
   const sheets = await getSheets();
   const existing = await listPromoterStaffMembers();
   const match = existing.find((r) => r.accountId === accountId);
   if (match) {
     await sheets.spreadsheets.values.update({
       spreadsheetId: config.sheetId,
-      range: `${config.promoterStaffSheetName}!A${match.sheetRowNumber}`,
+      range: `${config.pendingSheetName}!B${match.sheetRowNumber}`,
       valueInputOption: 'USER_ENTERED',
       requestBody: { values: [[name]] },
     });
@@ -855,35 +838,21 @@ async function upsertPromoterStaffMember(name, accountId) {
   }
   await sheets.spreadsheets.values.append({
     spreadsheetId: config.sheetId,
-    range: `${config.promoterStaffSheetName}`,
+    range: `${config.pendingSheetName}!A:C`,
     valueInputOption: 'USER_ENTERED',
-    insertDataOption: 'INSERT_ROWS',
-    requestBody: { values: [[name, accountId]] },
+    insertDataOption: 'OVERWRITE',
+    requestBody: { values: [[PROMOTER_ROLE_LABEL, name, accountId]] },
   });
 }
 
 async function removePromoterStaffMember(accountId) {
-  const sheets = await getSheets();
   const existing = await listPromoterStaffMembers();
   const match = existing.find((r) => r.accountId === accountId);
   if (!match) return;
-  const tabs = await listAllSheetTabs();
-  const tab = tabs.find((t) => t.title === config.promoterStaffSheetName);
-  if (!tab) return;
-  await sheets.spreadsheets.batchUpdate({
+  const sheets = await getSheets();
+  await sheets.spreadsheets.values.clear({
     spreadsheetId: config.sheetId,
-    requestBody: {
-      requests: [{
-        deleteDimension: {
-          range: {
-            sheetId: Number(tab.gid),
-            dimension: 'ROWS',
-            startIndex: match.sheetRowNumber - 1,
-            endIndex: match.sheetRowNumber,
-          },
-        },
-      }],
-    },
+    range: `${config.pendingSheetName}!A${match.sheetRowNumber}:C${match.sheetRowNumber}`,
   });
 }
 
