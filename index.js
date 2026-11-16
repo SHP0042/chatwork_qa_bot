@@ -282,25 +282,6 @@ async function uploadImageToDrive(dataUrl, baseName) {
   return `https://drive.google.com/uc?export=view&id=${fileId}`;
 }
 
-function extractDriveFileIdFromUrl(url) {
-  const m = /[?&]id=([^&]+)/.exec(url || '');
-  return m ? m[1] : null;
-}
-
-// 質問・回答が削除/非表示になったタイミングで、保存していた添付画像も
-// 共有ドライブから消す(溜まりっぱなしにしないため)。失敗しても本処理は
-// 止めない(ベストエフォート)。
-async function deleteDriveImageIfAny(url) {
-  const fileId = extractDriveFileIdFromUrl(url);
-  if (!fileId) return;
-  try {
-    const drive = await getDrive();
-    await drive.files.delete({ fileId, supportsAllDrives: true });
-  } catch (e) {
-    console.error('添付画像の削除に失敗しました(共有ドライブ):', e.message || e);
-  }
-}
-
 let cachedFaqTitle = null;
 // overrideGid / overrideName を渡すと、環境変数の設定に関係なく一時的に別タブを指定できる
 // （/debug-sheet?gid=... や ?name=... でRenderを再デプロイせずに他タブを確認するために使用）。
@@ -4679,9 +4660,8 @@ app.post('/api/ask-login', express.json(), (req, res) => {
 
 // Q&A表に答えが無かった分を保留シートに記録し、見落とし防止のため既存のChatwork
 // ルームに軽い通知を送る(新しいグループは作らず、返信も期待しない)。
-// 質問・回答に添付された画像のURL(Gyazoなど外部サービスに貼ったリンク)を、
-// Chatworkのメッセージ本文に追記するための共通処理。画像そのものはこちらでは
-// 保存せず、リンクの文字列だけをシートに記録する(溜まる心配がない)。
+// 質問・回答に添付された画像のURL(共有ドライブに保存したファイルへのリンク)を、
+// Chatworkのメッセージ本文に追記するための共通処理。
 function imageUrlLine(label, url) {
   const trimmed = (url || '').trim();
   if (!trimmed) return '';
@@ -4926,8 +4906,6 @@ app.post('/api/ask-delete', express.json(), async (req, res) => {
       answeredBy: '接客担当(自社サイト・取消)',
       answeredAt: new Date().toISOString(),
     });
-    // 取り消した質問に画像が添付されていれば、共有ドライブ上のコピーも消しておく。
-    deleteDriveImageIfAny(target.questionImageUrl).catch(() => {});
 
     return res.json({ ok: true });
   } catch (e) {
@@ -4957,10 +4935,6 @@ app.post('/api/ask-hide', express.json(), async (req, res) => {
     }
 
     await updatePendingRow(target.sheetRowNumber, { status: 'hidden' });
-    // 一覧から消えるタイミングで、添付されていた画像(質問・回答とも)も
-    // 共有ドライブから削除する(溜まりっぱなしにしないため)。
-    deleteDriveImageIfAny(target.questionImageUrl).catch(() => {});
-    deleteDriveImageIfAny(target.answerImageUrl).catch(() => {});
     return res.json({ ok: true });
   } catch (e) {
     console.error('/api/ask-hide エラー:', e);
@@ -5200,7 +5174,6 @@ app.post('/api/promoter-delete', express.json(), async (req, res) => {
       answeredBy: 'プロモーター(サイト管理画面・削除)',
       answeredAt: new Date().toISOString(),
     });
-    deleteDriveImageIfAny(target.questionImageUrl).catch(() => {});
 
     return res.json({ ok: true });
   } catch (e) {
