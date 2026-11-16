@@ -249,13 +249,13 @@ async function getDrive() {
   return driveClient;
 }
 
-// data URL(例: "data:image/jpeg;base64,....")を共有ドライブの
-// 「【SHP】QAサイト専用」フォルダにアップロードし、誰でも閲覧できるリンクを返す。
-// 戻り値のURLにはファイルIDが含まれているので、後で削除する際にも使う
-// (extractDriveFileIdFromUrlで取り出す)。
+// data URL(例: "data:image/jpeg;base64,...." や "data:application/pdf;base64,...")を
+// 共有ドライブの「【SHP】QAサイト専用」フォルダにアップロードし、誰でも閲覧できる
+// リンクを返す。画像はそのまま埋め込み表示できるリンクを、PDFはGoogleドライブの
+// 閲覧ページへのリンクを返す(フロント側はURLの形で画像かPDFかを判定している)。
 async function uploadImageToDrive(dataUrl, baseName) {
   const m = /^data:([^;]+);base64,(.+)$/.exec(dataUrl || '');
-  if (!m) throw new Error('画像データの形式が正しくありません(data URLではありません)');
+  if (!m) throw new Error('添付データの形式が正しくありません(data URLではありません)');
   const mimeType = m[1];
   const buffer = Buffer.from(m[2], 'base64');
   const extMatch = /\/([a-zA-Z0-9.+-]+)$/.exec(mimeType);
@@ -279,6 +279,9 @@ async function uploadImageToDrive(dataUrl, baseName) {
     supportsAllDrives: true,
     requestBody: { role: 'reader', type: 'anyone' },
   });
+  if (mimeType === 'application/pdf') {
+    return `https://drive.google.com/file/d/${fileId}/view`;
+  }
   return `https://drive.google.com/uc?export=view&id=${fileId}`;
 }
 
@@ -358,6 +361,7 @@ const PENDING_HEADERS = [
   '回答日時',
   '質問画像URL',
   '回答画像URL',
+  '自動回答済み部分',
 ];
 
 async function ensurePendingSheetExists() {
@@ -505,6 +509,7 @@ async function appendPendingRow(entry) {
     status === 'pending' ? '' : now,
     entry.questionImageUrl || '',
     entry.answerImageUrl || '',
+    entry.autoAnsweredText || '',
   ];
   await sheets.spreadsheets.values.append({
     spreadsheetId: config.sheetId,
@@ -545,6 +550,7 @@ async function listPendingRows() {
       answeredAt: r[12] || '',
       questionImageUrl: r[13] || '',
       answerImageUrl: r[14] || '',
+      autoAnsweredText: r[15] || '',
     });
   }
   return rows;
@@ -560,6 +566,7 @@ async function updatePendingRow(sheetRowNumber, updates) {
     answeredAt: 'M',
     questionImageUrl: 'N',
     answerImageUrl: 'O',
+    autoAnsweredText: 'P',
   };
   const data = Object.entries(updates).map(([key, value]) => ({
     range: `${config.pendingSheetName}!${colMap[key]}${sheetRowNumber}`,
@@ -1946,6 +1953,16 @@ function buildChatPageHtml() {
     background: transparent; border: none; color: #b7bcc9; font-size: 18px;
     cursor: pointer; padding: 0 6px; line-height: 1;
   }
+  .image-preview-name {
+    font-size: 13px; color: #4a4f5c; background: #f1f3f8; border: 1px solid #dfe2ec;
+    border-radius: 10px; padding: 6px 10px; max-width: 160px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .bubble-pdf-link {
+    display: inline-block; margin-top: 8px; padding: 8px 12px;
+    background: #f1f3f8; border: 1px solid #dfe2ec; border-radius: 10px;
+    color: var(--brand); text-decoration: none; font-size: 13px;
+  }
   /* ボタン共通の「水っぽい」質感と、押すとキラキラ輝きながら軽くプルンと弾むような演出(弾力は控えめに調整した版) */
   button { position: relative; overflow: visible; isolation: isolate; }
   button::before {
@@ -2191,11 +2208,12 @@ function buildChatPageHtml() {
         <div class="input-bar">
           <div class="image-preview-row" id="imagePreviewRow">
             <img id="imagePreviewThumb" alt="添付する画像" />
+            <span id="imagePreviewName" class="image-preview-name" style="display:none;"></span>
             <button type="button" class="image-url-clear" id="imagePreviewClearBtn" title="画像を外す">×</button>
           </div>
-          <input type="file" id="imageFileInput" accept="image/*" style="display:none;" />
+          <input type="file" id="imageFileInput" accept="image/*,application/pdf" style="display:none;" />
           <div class="input-inner">
-            <button type="button" class="image-toggle-btn" id="imageToggleBtn" title="画像を添付">
+            <button type="button" class="image-toggle-btn" id="imageToggleBtn" title="画像・PDFを添付">
               <svg viewBox="0 0 24 24"><path d="M21 19V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
             </button>
             <input type="text" id="questionInput" placeholder="質問を入力してください" />
@@ -2422,9 +2440,18 @@ function buildChatPageHtml() {
 
   function qs(id) { return document.getElementById(id); }
 
-  // 選んだ画像ファイルを、送信しやすいサイズに縮小してdata URLにする
-  // (スマホの写真をそのまま送ると大きすぎるため、長辺1280px・JPEG品質0.82に圧縮)。
+  // 選んだファイルを送信用のdata URLにする。画像は送信しやすいサイズに縮小して
+  // data URLにする(スマホの写真をそのまま送ると大きすぎるため、長辺1280px・
+  // JPEG品質0.82に圧縮)。PDFは縮小できないので、そのままdata URLにする。
   function resizeImageFileToDataUrl(file, callback) {
+    var isPdf = file && (file.type === 'application/pdf' || /\.pdf$/i.test(file.name || ''));
+    if (isPdf) {
+      var pdfReader = new FileReader();
+      pdfReader.onload = function () { callback(pdfReader.result); };
+      pdfReader.onerror = function () { callback(null); };
+      pdfReader.readAsDataURL(file);
+      return;
+    }
     var reader = new FileReader();
     reader.onload = function () {
       var img = new Image();
@@ -2446,6 +2473,13 @@ function buildChatPageHtml() {
     };
     reader.onerror = function () { callback(null); };
     reader.readAsDataURL(file);
+  }
+
+  // 添付のURL(選択直後のdata URL、または保存後のGoogleドライブのリンク)が
+  // PDFかどうかを判定する。PDFは<img>では表示できないため、リンク表示に切り替える。
+  function isPdfAttachmentUrl(u) {
+    if (!u) return false;
+    return u.indexOf('data:application/pdf') === 0 || u.indexOf('/file/d/') !== -1;
   }
 
   // Q&A表の回答には、チャットワーク用の[info]...[/info]のような装飾タグが
@@ -2517,6 +2551,11 @@ function buildChatPageHtml() {
   // サーバーから取ってきた1件分のデータを、画面で使う「部屋」の形に変換する。
   function roomFromServerItem(it) {
     var messages = [{ who: 'user', text: it.question, at: it.askedAt, imageUrl: it.questionImageUrl || '' }];
+    // 質問の一部がQ&A表で即答できていた場合、その内容は会話を開き直しても
+    // 消えないよう、保留シート側に保存した内容からここで復元する。
+    if (it.autoAnsweredText) {
+      messages.push({ who: 'bot', text: it.autoAnsweredText, at: it.askedAt });
+    }
     if (it.status === 'answered' && it.answer) {
       messages.push({ who: 'bot', text: it.answer, at: it.answeredAt || it.askedAt, imageUrl: it.answerImageUrl || '' });
     }
@@ -2568,6 +2607,7 @@ function buildChatPageHtml() {
   var imageFileInput = qs('imageFileInput');
   var imagePreviewRow = qs('imagePreviewRow');
   var imagePreviewThumb = qs('imagePreviewThumb');
+  var imagePreviewName = qs('imagePreviewName');
   var imagePreviewClearBtn = qs('imagePreviewClearBtn');
   var pendingImageDataUrl = '';
   // ヘッダーに表示しているロゴ画像を、ボットの吹き出しの横のアイコンにも使い回す
@@ -2607,13 +2647,23 @@ function buildChatPageHtml() {
       bubble.textContent = text;
     }
     if (imageUrl) {
-      var img = document.createElement('img');
-      img.className = 'bubble-image';
-      img.src = imageUrl;
-      img.alt = '添付画像';
-      img.loading = 'lazy';
-      img.addEventListener('click', function () { window.open(imageUrl, '_blank', 'noopener'); });
-      bubble.appendChild(img);
+      if (isPdfAttachmentUrl(imageUrl)) {
+        var pdfLink = document.createElement('a');
+        pdfLink.className = 'bubble-pdf-link';
+        pdfLink.href = imageUrl;
+        pdfLink.target = '_blank';
+        pdfLink.rel = 'noopener';
+        pdfLink.textContent = '📄 添付ファイルを開く';
+        bubble.appendChild(pdfLink);
+      } else {
+        var img = document.createElement('img');
+        img.className = 'bubble-image';
+        img.src = imageUrl;
+        img.alt = '添付画像';
+        img.loading = 'lazy';
+        img.addEventListener('click', function () { window.open(imageUrl, '_blank', 'noopener'); });
+        bubble.appendChild(img);
+      }
     }
     col.appendChild(bubble);
     var timeText = atIso ? formatTime(atIso) : '';
@@ -3359,11 +3409,20 @@ function buildChatPageHtml() {
       if (!file) return;
       resizeImageFileToDataUrl(file, function (dataUrl) {
         if (!dataUrl) {
-          showToast('画像の読み込みに失敗しました。別の画像でお試しください。');
+          showToast('ファイルの読み込みに失敗しました。別のファイルでお試しください。');
           return;
         }
         pendingImageDataUrl = dataUrl;
-        if (imagePreviewThumb) imagePreviewThumb.src = dataUrl;
+        if (isPdfAttachmentUrl(dataUrl)) {
+          if (imagePreviewThumb) imagePreviewThumb.style.display = 'none';
+          if (imagePreviewName) {
+            imagePreviewName.textContent = '📄 ' + (file.name || 'PDFファイル');
+            imagePreviewName.style.display = '';
+          }
+        } else {
+          if (imagePreviewThumb) { imagePreviewThumb.style.display = ''; imagePreviewThumb.src = dataUrl; }
+          if (imagePreviewName) imagePreviewName.style.display = 'none';
+        }
         if (imagePreviewRow) imagePreviewRow.classList.add('open');
         if (imageToggleBtn) imageToggleBtn.classList.add('active');
       });
@@ -3570,6 +3629,26 @@ function buildPromoterAdminHtml() {
     margin: -4px 0 12px;
     cursor: pointer;
     object-fit: cover;
+  }
+  .q-card .q-auto-answered-note {
+    font-size: 12.5px; color: var(--muted); background: #f6f7fb; border: 1px dashed #dfe2ec;
+    border-radius: 8px; padding: 8px 10px; margin: -4px 0 12px; white-space: pre-wrap; line-height: 1.6;
+  }
+  .q-card .q-pdf-link {
+    display: inline-block;
+    margin: -4px 0 12px;
+    padding: 8px 12px;
+    background: #f1f3f8;
+    border: 1px solid #dfe2ec;
+    border-radius: 10px;
+    color: var(--brand);
+    text-decoration: none;
+    font-size: 13px;
+  }
+  .q-card .answer-image-preview-name {
+    font-size: 13px; color: var(--muted); background: #f1f3f8; border: 1px solid #dfe2ec;
+    border-radius: 8px; padding: 6px 10px; max-width: 140px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .q-card .answer-image-row {
     display: flex;
@@ -3928,9 +4007,18 @@ function buildPromoterAdminHtml() {
 
   function qs(id) { return document.getElementById(id); }
 
-  // 選んだ画像ファイルを、送信しやすいサイズに縮小してdata URLにする
-  // (スマホの写真をそのまま送ると大きすぎるため、長辺1280px・JPEG品質0.82に圧縮)。
+  // 選んだファイルを送信用のdata URLにする。画像は送信しやすいサイズに縮小して
+  // data URLにする(スマホの写真をそのまま送ると大きすぎるため、長辺1280px・
+  // JPEG品質0.82に圧縮)。PDFは縮小できないので、そのままdata URLにする。
   function resizeImageFileToDataUrl(file, callback) {
+    var isPdf = file && (file.type === 'application/pdf' || /\.pdf$/i.test(file.name || ''));
+    if (isPdf) {
+      var pdfReader = new FileReader();
+      pdfReader.onload = function () { callback(pdfReader.result); };
+      pdfReader.onerror = function () { callback(null); };
+      pdfReader.readAsDataURL(file);
+      return;
+    }
     var reader = new FileReader();
     reader.onload = function () {
       var img = new Image();
@@ -3952,6 +4040,13 @@ function buildPromoterAdminHtml() {
     };
     reader.onerror = function () { callback(null); };
     reader.readAsDataURL(file);
+  }
+
+  // 添付のURL(選択直後のdata URL、または保存後のGoogleドライブのリンク)が
+  // PDFかどうかを判定する。PDFは<img>では表示できないため、リンク表示に切り替える。
+  function isPdfAttachmentUrl(u) {
+    if (!u) return false;
+    return u.indexOf('data:application/pdf') === 0 || u.indexOf('/file/d/') !== -1;
   }
 
   function getStoredPassword() {
@@ -4293,13 +4388,32 @@ function buildPromoterAdminHtml() {
       card.appendChild(qText);
 
       if (item.questionImageUrl) {
-        var qImg = document.createElement('img');
-        qImg.className = 'q-image';
-        qImg.src = item.questionImageUrl;
-        qImg.alt = '質問の添付画像';
-        qImg.loading = 'lazy';
-        qImg.addEventListener('click', function () { window.open(item.questionImageUrl, '_blank', 'noopener'); });
-        card.appendChild(qImg);
+        if (isPdfAttachmentUrl(item.questionImageUrl)) {
+          var qPdfLink = document.createElement('a');
+          qPdfLink.className = 'q-pdf-link';
+          qPdfLink.href = item.questionImageUrl;
+          qPdfLink.target = '_blank';
+          qPdfLink.rel = 'noopener';
+          qPdfLink.textContent = '📄 質問の添付ファイルを開く';
+          card.appendChild(qPdfLink);
+        } else {
+          var qImg = document.createElement('img');
+          qImg.className = 'q-image';
+          qImg.src = item.questionImageUrl;
+          qImg.alt = '質問の添付画像';
+          qImg.loading = 'lazy';
+          qImg.addEventListener('click', function () { window.open(item.questionImageUrl, '_blank', 'noopener'); });
+          card.appendChild(qImg);
+        }
+      }
+
+      // 質問の一部がすでにQ&A表で自動回答できていた場合、二重に答えなくて済むよう
+      // その内容を表示しておく(ここで入力するのは、残りの未回答部分への回答)。
+      if (item.autoAnsweredText) {
+        var autoNote = document.createElement('div');
+        autoNote.className = 'q-auto-answered-note';
+        autoNote.textContent = 'すでに自動回答済みの部分:\n' + item.autoAnsweredText;
+        card.appendChild(autoNote);
       }
 
       var textarea = document.createElement('textarea');
@@ -4313,15 +4427,19 @@ function buildPromoterAdminHtml() {
       var imageBtn = document.createElement('button');
       imageBtn.type = 'button';
       imageBtn.className = 'answer-image-btn';
-      imageBtn.textContent = '📎 画像を添付';
+      imageBtn.textContent = '📎 画像・PDFを添付';
       var hiddenFileInput = document.createElement('input');
       hiddenFileInput.type = 'file';
-      hiddenFileInput.accept = 'image/*';
+      hiddenFileInput.accept = 'image/*,application/pdf';
       hiddenFileInput.style.display = 'none';
       var imagePreview = document.createElement('div');
       imagePreview.className = 'answer-image-preview';
       var previewImg = document.createElement('img');
       imagePreview.appendChild(previewImg);
+      var previewName = document.createElement('span');
+      previewName.className = 'answer-image-preview-name';
+      previewName.style.display = 'none';
+      imagePreview.appendChild(previewName);
       var previewClear = document.createElement('button');
       previewClear.type = 'button';
       previewClear.className = 'answer-image-clear';
@@ -4339,7 +4457,15 @@ function buildPromoterAdminHtml() {
         resizeImageFileToDataUrl(file, function (dataUrl) {
           if (!dataUrl) return;
           answerImageData = dataUrl;
-          previewImg.src = dataUrl;
+          if (isPdfAttachmentUrl(dataUrl)) {
+            previewImg.style.display = 'none';
+            previewName.textContent = '📄 ' + (file.name || 'PDFファイル');
+            previewName.style.display = '';
+          } else {
+            previewImg.style.display = '';
+            previewImg.src = dataUrl;
+            previewName.style.display = 'none';
+          }
           imagePreview.classList.add('open');
           imageBtn.classList.add('active');
         });
@@ -4681,9 +4807,13 @@ function imageUrlLine(label, url) {
   return `\n${label}\n${trimmed}\n`;
 }
 
-async function createSitePendingAndNotify(question, staff = null, questionImageUrl = '') {
+async function createSitePendingAndNotify(question, staff = null, questionImageUrl = '', unansweredPart = '', autoAnsweredText = '') {
   let pendingId = null;
   try {
+    // 保留シート・質問一覧・プロモーター画面には、必ず元のご質問全文を残す。
+    // (一部だけFAQで自動回答できた場合でも、未回答部分だけに差し替えてしまうと
+    // 元の文脈が失われ、リロード後に文章が途中から変わって見える原因になるため)
+    // 即座に自動回答できた部分(answerBody)も、消えてしまわないようあわせて保存しておく。
     pendingId = await appendPendingRow({
       question,
       askerAccountId: staff ? staff.accountId : '',
@@ -4692,6 +4822,7 @@ async function createSitePendingAndNotify(question, staff = null, questionImageU
       questionMessageId: '',
       holderRequestMessageId: '',
       questionImageUrl,
+      autoAnsweredText,
     });
   } catch (e) {
     console.error('保留シートへの記録に失敗しました:', e);
@@ -4705,10 +4836,14 @@ async function createSitePendingAndNotify(question, staff = null, questionImageU
       const staffMembers = await listPromoterStaffMembers();
       const mentions = staffMembers.map((s) => mentionTag(s.accountId, s.name)).join('\n');
       const mentionPrefix = mentions ? `${mentions}\n` : '';
+      const unansweredNote = (unansweredPart && unansweredPart.trim() && unansweredPart.trim() !== question.trim())
+        ? `\n【このうち未回答の部分】\n${unansweredPart.trim()}\n`
+        : '';
       await sendMessage(
         mentionPrefix
         + `サイト内に未回答の質問が届いています。\n\n`
         + `【質問】\n${question}\n`
+        + unansweredNote
         + imageUrlLine('▼添付画像', questionImageUrl)
         + `\n▼回答はこちらから\nhttps://shp-company.site/qa_bot/promoter/`
       );
@@ -4742,7 +4877,7 @@ async function recordSiteAnswered(question, answer, staff = null, questionImageU
   }
 }
 
-app.post('/api/ask', express.json({ limit: '8mb' }), async (req, res) => {
+app.post('/api/ask', express.json({ limit: '20mb' }), async (req, res) => {
   allowCors(req, res);
   if (!checkChatPassword(req)) {
     return res.status(401).json({ error: 'unauthorized' });
@@ -4790,7 +4925,7 @@ app.post('/api/ask', express.json({ limit: '8mb' }), async (req, res) => {
           const id = await recordSiteAnswered(question, answerBody, staff, imageUrl);
           return res.json({ answered: true, answer: answerBody, id });
         }
-        const pendingId = await createSitePendingAndNotify(leftover, staff, imageUrl);
+        const pendingId = await createSitePendingAndNotify(question, staff, imageUrl, leftover, answerBody);
         return res.json({
           answered: false,
           pendingId,
@@ -4859,6 +4994,7 @@ app.get('/api/ask-list', async (req, res) => {
         answeredAt: p.answeredAt || '',
         questionImageUrl: p.questionImageUrl || '',
         answerImageUrl: p.answerImageUrl || '',
+        autoAnsweredText: p.autoAnsweredText || '',
       }))
       .reverse();
     return res.json({ items });
@@ -5083,6 +5219,7 @@ app.get('/api/promoter-pending', async (req, res) => {
         question: p.question,
         requestedAt: p.requestedAt,
         questionImageUrl: p.questionImageUrl || '',
+        autoAnsweredText: p.autoAnsweredText || '',
       }))
       .reverse();
     return res.json({ items });
@@ -5092,7 +5229,7 @@ app.get('/api/promoter-pending', async (req, res) => {
   }
 });
 
-app.post('/api/promoter-answer', express.json({ limit: '8mb' }), async (req, res) => {
+app.post('/api/promoter-answer', express.json({ limit: '20mb' }), async (req, res) => {
   allowCors(req, res);
   if (!checkPromoterPassword(req)) {
     return res.status(401).json({ error: 'unauthorized' });
