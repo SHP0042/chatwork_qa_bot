@@ -6,6 +6,7 @@ import fetch from 'node-fetch';
 import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai';
 import holiday_jp from 'japanese-holidays';
 import * as webpush from 'web-push';
+import { Readable } from 'stream';
 
 // サーバーの時刻をUTCではなく日本時間(JST)に固定する。
 // これを最初に設定しないと、営業日計算や「朝9時」などの時刻指定が
@@ -81,6 +82,11 @@ const config = {
   // プロモーター(回答者)の名前とChatworkアカウントIDの一覧を保存するシート。
   // 接客担当の一覧(Bot_Staff)とは別で管理する。
   promoterStaffSheetName: process.env.PROMOTER_STAFF_SHEET_NAME || 'Bot_PromoterStaff',
+
+  // 質問・回答に添付された画像のアップロード先(共有ドライブ内のフォルダ)。
+  // 既定値は「【SHP】QAサイト専用」フォルダ。サービスアカウントをこのフォルダに
+  // 「コンテンツ管理者」以上で追加しておく必要がある。
+  qaImageDriveFolderId: process.env.QA_IMAGE_DRIVE_FOLDER_ID || '1r5L1-oV0dUoCnDKVFleSUHEbObT5-3lM',
 };
 
 function assertConfig() {
@@ -194,7 +200,12 @@ function stripChatworkTags(body) {
 // ============================================================
 // sheets
 // ============================================================
-const SHEETS_SCOPES = ['https://www.googleapis.com/auth/spreadsheets'];
+// スプレッドシート操作に加えて、質問・回答の添付画像を共有ドライブに
+// 保存するためのDriveアクセスも同じサービスアカウントで行う。
+const GOOGLE_SCOPES = [
+  'https://www.googleapis.com/auth/spreadsheets',
+  'https://www.googleapis.com/auth/drive',
+];
 
 function loadCredentials() {
   const raw = config.googleServiceAccountJson;
@@ -213,14 +224,81 @@ function loadCredentials() {
   return JSON.parse(raw);
 }
 
+let googleAuthClient = null;
+async function getGoogleAuthClient() {
+  if (googleAuthClient) return googleAuthClient;
+  const credentials = loadCredentials();
+  const auth = new google.auth.GoogleAuth({ credentials, scopes: GOOGLE_SCOPES });
+  googleAuthClient = await auth.getClient();
+  return googleAuthClient;
+}
+
 let sheetsClient = null;
 async function getSheets() {
   if (sheetsClient) return sheetsClient;
-  const credentials = loadCredentials();
-  const auth = new google.auth.GoogleAuth({ credentials, scopes: SHEETS_SCOPES });
-  const client = await auth.getClient();
+  const client = await getGoogleAuthClient();
   sheetsClient = google.sheets({ version: 'v4', auth: client });
   return sheetsClient;
+}
+
+let driveClient = null;
+async function getDrive() {
+  if (driveClient) return driveClient;
+  const client = await getGoogleAuthClient();
+  driveClient = google.drive({ version: 'v3', auth: client });
+  return driveClient;
+}
+
+// data URL(例: "data:image/jpeg;base64,....")を共有ドライブの
+// 「【SHP】QAサイト専用」フォルダにアップロードし、誰でも閲覧できるリンクを返す。
+// 戻り値のURLにはファイルIDが含まれているので、後で削除する際にも使う
+// (extractDriveFileIdFromUrlで取り出す)。
+async function uploadImageToDrive(dataUrl, baseName) {
+  const m = /^data:([^;]+);base64,(.+)$/.exec(dataUrl || '');
+  if (!m) throw new Error('画像データの形式が正しくありません(data URLではありません)');
+  const mimeType = m[1];
+  const buffer = Buffer.from(m[2], 'base64');
+  const extMatch = /\/([a-zA-Z0-9.+-]+)$/.exec(mimeType);
+  const ext = extMatch ? extMatch[1].replace('jpeg', 'jpg') : 'bin';
+  const drive = await getDrive();
+  const created = await drive.files.create({
+    requestBody: {
+      name: `${baseName}-${Date.now()}.${ext}`,
+      parents: [config.qaImageDriveFolderId],
+    },
+    media: {
+      mimeType,
+      body: Readable.from(buffer),
+    },
+    supportsAllDrives: true,
+    fields: 'id',
+  });
+  const fileId = created.data.id;
+  await drive.permissions.create({
+    fileId,
+    supportsAllDrives: true,
+    requestBody: { role: 'reader', type: 'anyone' },
+  });
+  return `https://drive.google.com/uc?export=view&id=${fileId}`;
+}
+
+function extractDriveFileIdFromUrl(url) {
+  const m = /[?&]id=([^&]+)/.exec(url || '');
+  return m ? m[1] : null;
+}
+
+// 質問・回答が削除/非表示になったタイミングで、保存していた添付画像も
+// 共有ドライブから消す(溜まりっぱなしにしないため)。失敗しても本処理は
+// 止めない(ベストエフォート)。
+async function deleteDriveImageIfAny(url) {
+  const fileId = extractDriveFileIdFromUrl(url);
+  if (!fileId) return;
+  try {
+    const drive = await getDrive();
+    await drive.files.delete({ fileId, supportsAllDrives: true });
+  } catch (e) {
+    console.error('添付画像の削除に失敗しました(共有ドライブ):', e.message || e);
+  }
 }
 
 let cachedFaqTitle = null;
@@ -284,6 +362,8 @@ const PENDING_HEADERS = [
   '回答',
   '回答者',
   '回答日時',
+  '質問画像URL',
+  '回答画像URL',
 ];
 
 async function ensurePendingSheetExists() {
@@ -429,6 +509,8 @@ async function appendPendingRow(entry) {
     entry.answer || '',
     entry.answeredBy || '',
     status === 'pending' ? '' : now,
+    entry.questionImageUrl || '',
+    entry.answerImageUrl || '',
   ];
   await sheets.spreadsheets.values.append({
     spreadsheetId: config.sheetId,
@@ -467,6 +549,8 @@ async function listPendingRows() {
       answer: r[10] || '',
       answeredBy: r[11] || '',
       answeredAt: r[12] || '',
+      questionImageUrl: r[13] || '',
+      answerImageUrl: r[14] || '',
     });
   }
   return rows;
@@ -480,6 +564,8 @@ async function updatePendingRow(sheetRowNumber, updates) {
     answer: 'K',
     answeredBy: 'L',
     answeredAt: 'M',
+    questionImageUrl: 'N',
+    answerImageUrl: 'O',
   };
   const data = Object.entries(updates).map(([key, value]) => ({
     range: `${config.pendingSheetName}!${colMap[key]}${sheetRowNumber}`,
@@ -1337,8 +1423,9 @@ async function runFollowupCheck({ log = console.log } = {}) {
         await sendMessage(
           mentionPrefix
           + `サイト内に未回答の質問が届いています。\n\n`
-          + `【質問】\n${p.question}\n\n`
-          + `▼回答はこちらから\nhttps://shp-company.site/qa_bot/promoter/`
+          + `【質問】\n${p.question}\n`
+          + imageUrlLine('▼添付画像', p.questionImageUrl)
+          + `\n▼回答はこちらから\nhttps://shp-company.site/qa_bot/promoter/`
         );
         await updatePendingRow(p.sheetRowNumber, { reminded: 'yes' });
         reminded++;
@@ -1836,6 +1923,35 @@ function buildChatPageHtml() {
   .input-inner button:disabled { opacity: 0.5; cursor: default; }
   .input-inner button svg { width: 17px; height: 17px; fill: #fff; }
   .input-hint { text-align: center; font-size: 11px; color: #b7bcc9; margin-top: 8px; }
+  .bubble-image {
+    display: block;
+    max-width: 220px;
+    max-height: 220px;
+    width: auto;
+    height: auto;
+    border-radius: 12px;
+    margin-top: 8px;
+    cursor: pointer;
+    object-fit: cover;
+  }
+  .image-toggle-btn {
+    width: 40px; height: 40px; border-radius: 50%;
+    border: 1px solid #dfe2ec; background: #fff; color: #9aa0b0;
+    cursor: pointer; display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0; transition: border-color 0.15s ease, color 0.15s ease;
+  }
+  .image-toggle-btn svg { width: 18px; height: 18px; fill: currentColor; }
+  .image-toggle-btn.active { border-color: var(--brand); color: var(--brand); }
+  .image-preview-row { display: none; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .image-preview-row.open { display: flex; }
+  .image-preview-row img {
+    width: 52px; height: 52px; border-radius: 10px; object-fit: cover;
+    border: 1px solid #dfe2ec;
+  }
+  .image-url-clear {
+    background: transparent; border: none; color: #b7bcc9; font-size: 18px;
+    cursor: pointer; padding: 0 6px; line-height: 1;
+  }
   /* ボタン共通の「水っぽい」質感と、押すとキラキラ輝きながら軽くプルンと弾むような演出(弾力は控えめに調整した版) */
   button { position: relative; overflow: visible; isolation: isolate; }
   button::before {
@@ -2079,7 +2195,15 @@ function buildChatPageHtml() {
         </div>
         <div class="chat-body" id="chatBody"></div>
         <div class="input-bar">
+          <div class="image-preview-row" id="imagePreviewRow">
+            <img id="imagePreviewThumb" alt="添付する画像" />
+            <button type="button" class="image-url-clear" id="imagePreviewClearBtn" title="画像を外す">×</button>
+          </div>
+          <input type="file" id="imageFileInput" accept="image/*" style="display:none;" />
           <div class="input-inner">
+            <button type="button" class="image-toggle-btn" id="imageToggleBtn" title="画像を添付">
+              <svg viewBox="0 0 24 24"><path d="M21 19V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
+            </button>
             <input type="text" id="questionInput" placeholder="質問を入力してください" />
             <button id="sendButton">
               <svg viewBox="0 0 24 24"><path d="M2 21l21-9L2 3v7l15 2-15 2z"/></svg>
@@ -2304,6 +2428,32 @@ function buildChatPageHtml() {
 
   function qs(id) { return document.getElementById(id); }
 
+  // 選んだ画像ファイルを、送信しやすいサイズに縮小してdata URLにする
+  // (スマホの写真をそのまま送ると大きすぎるため、長辺1280px・JPEG品質0.82に圧縮)。
+  function resizeImageFileToDataUrl(file, callback) {
+    var reader = new FileReader();
+    reader.onload = function () {
+      var img = new Image();
+      img.onload = function () {
+        var maxSide = 1280;
+        var w = img.width, h = img.height;
+        if (w > maxSide || h > maxSide) {
+          if (w >= h) { h = Math.round(h * maxSide / w); w = maxSide; }
+          else { w = Math.round(w * maxSide / h); h = maxSide; }
+        }
+        var canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+        callback(canvas.toDataURL('image/jpeg', 0.82));
+      };
+      img.onerror = function () { callback(null); };
+      img.src = reader.result;
+    };
+    reader.onerror = function () { callback(null); };
+    reader.readAsDataURL(file);
+  }
+
   // Q&A表の回答には、チャットワーク用の[info]...[/info]のような装飾タグが
   // そのまま入っていることがある。このサイトのチャットではチャットワークの
   // 記法を解釈できないため、見やすい形(枠で囲む等)に変換してから表示する。
@@ -2372,9 +2522,9 @@ function buildChatPageHtml() {
 
   // サーバーから取ってきた1件分のデータを、画面で使う「部屋」の形に変換する。
   function roomFromServerItem(it) {
-    var messages = [{ who: 'user', text: it.question, at: it.askedAt }];
+    var messages = [{ who: 'user', text: it.question, at: it.askedAt, imageUrl: it.questionImageUrl || '' }];
     if (it.status === 'answered' && it.answer) {
-      messages.push({ who: 'bot', text: it.answer, at: it.answeredAt || it.askedAt });
+      messages.push({ who: 'bot', text: it.answer, at: it.answeredAt || it.askedAt, imageUrl: it.answerImageUrl || '' });
     }
     return {
       id: it.id,
@@ -2420,6 +2570,12 @@ function buildChatPageHtml() {
   var toastStack = qs('toastStack');
   var input = qs('questionInput');
   var sendButton = qs('sendButton');
+  var imageToggleBtn = qs('imageToggleBtn');
+  var imageFileInput = qs('imageFileInput');
+  var imagePreviewRow = qs('imagePreviewRow');
+  var imagePreviewThumb = qs('imagePreviewThumb');
+  var imagePreviewClearBtn = qs('imagePreviewClearBtn');
+  var pendingImageDataUrl = '';
   // ヘッダーに表示しているロゴ画像を、ボットの吹き出しの横のアイコンにも使い回す
   // (同じ画像データを埋め込みで二重に持たないようにするため)。
   var logoImg = document.querySelector('.brand-logo');
@@ -2437,7 +2593,7 @@ function buildChatPageHtml() {
     } catch (e) { return ''; }
   }
 
-  function buildBubbleRow(who, text, atIso) {
+  function buildBubbleRow(who, text, atIso, imageUrl) {
     var row = document.createElement('div');
     row.className = 'bubble-row ' + who;
     if (who === 'bot' && avatarSrc) {
@@ -2455,6 +2611,15 @@ function buildChatPageHtml() {
       bubble.innerHTML = formatAnswerHtml(text);
     } else {
       bubble.textContent = text;
+    }
+    if (imageUrl) {
+      var img = document.createElement('img');
+      img.className = 'bubble-image';
+      img.src = imageUrl;
+      img.alt = '添付画像';
+      img.loading = 'lazy';
+      img.addEventListener('click', function () { window.open(imageUrl, '_blank', 'noopener'); });
+      bubble.appendChild(img);
     }
     col.appendChild(bubble);
     var timeText = atIso ? formatTime(atIso) : '';
@@ -2598,7 +2763,7 @@ function buildChatPageHtml() {
       return;
     }
     room.messages.forEach(function (m) {
-      var built = buildBubbleRow(m.who, m.text, m.at);
+      var built = buildBubbleRow(m.who, m.text, m.at, m.imageUrl);
       built.row.style.animation = 'none';
       chatBody.appendChild(built.row);
     });
@@ -2944,12 +3109,12 @@ function buildChatPageHtml() {
 
   // その部屋にメッセージを1件追加する。いま画面に開いている部屋であれば、
   // その場で吹き出しも追加する(highlightを立てると、新着が一瞬光って知らせる)。
-  function addRoomMessage(room, who, text, highlight) {
+  function addRoomMessage(room, who, text, highlight, imageUrl) {
     var at = new Date().toISOString();
-    room.messages.push({ who: who, text: text, at: at });
+    room.messages.push({ who: who, text: text, at: at, imageUrl: imageUrl || '' });
     room.updatedAt = at;
     if (activeRoomId === room.id) {
-      var built = buildBubbleRow(who, text, at);
+      var built = buildBubbleRow(who, text, at, imageUrl);
       if (highlight) {
         built.row.classList.add('bubble-highlight');
         setTimeout(function () { built.row.classList.remove('bubble-highlight'); }, 2200);
@@ -3025,7 +3190,7 @@ function buildChatPageHtml() {
         if (card) card.remove();
         if (room.status === 'answered') {
           var last = room.messages[room.messages.length - 1];
-          var built = buildBubbleRow('bot', last.text, last.at);
+          var built = buildBubbleRow('bot', last.text, last.at, last.imageUrl);
           built.row.classList.add('bubble-highlight');
           setTimeout(function () { built.row.classList.remove('bubble-highlight'); }, 2200);
           chatBody.appendChild(built.row);
@@ -3114,18 +3279,24 @@ function buildChatPageHtml() {
   function send() {
     var question = input.value.trim();
     if (!question) return;
+    var imageData = pendingImageDataUrl;
     input.value = '';
+    pendingImageDataUrl = '';
+    if (imageFileInput) imageFileInput.value = '';
+    if (imagePreviewRow) imagePreviewRow.classList.remove('open');
+    if (imageToggleBtn) imageToggleBtn.classList.remove('active');
     sendButton.disabled = true;
 
     // 質問1件につき新しい部屋を1つ作り、その場で開く(公式LINEで新しいトークを
-    // 始めるイメージ)。
+    // 始めるイメージ)。送信直後は、まだサーバー側のアップロードが終わっていなくても
+    // 選んだ画像(data URL)をそのままプレビュー表示する。
     var room = createRoom(question);
     activeRoomId = room.id;
     chatBody.innerHTML = '';
     updateRoomDetailHead(room);
     renderRoomList();
     enterDetailModeOnMobile();
-    addRoomMessage(room, 'user', question, false);
+    addRoomMessage(room, 'user', question, false, imageData);
     addTyping();
 
     var selectedStaff = getStoredStaff();
@@ -3134,6 +3305,7 @@ function buildChatPageHtml() {
       headers: { 'Content-Type': 'application/json', 'x-chat-password': getStoredPassword() },
       body: JSON.stringify({
         question: question,
+        imageData: imageData,
         staffName: selectedStaff ? selectedStaff.name : '',
         staffAccountId: selectedStaff ? selectedStaff.accountId : ''
       })
@@ -3180,6 +3352,37 @@ function buildChatPageHtml() {
   // エンターキーでは送信しない(日本語入力の変換確定でエンターを押した際に
   // 誤って送信されてしまうのを防ぐため)。送信は必ずボタンを押してもらう。
   sendButton.addEventListener('click', send);
+
+  // 画像アイコンを押すと、端末の写真選択画面が開く。
+  if (imageToggleBtn && imageFileInput) {
+    imageToggleBtn.addEventListener('click', function () {
+      imageFileInput.click();
+    });
+  }
+  if (imageFileInput) {
+    imageFileInput.addEventListener('change', function () {
+      var file = imageFileInput.files && imageFileInput.files[0];
+      if (!file) return;
+      resizeImageFileToDataUrl(file, function (dataUrl) {
+        if (!dataUrl) {
+          showToast('画像の読み込みに失敗しました。別の画像でお試しください。');
+          return;
+        }
+        pendingImageDataUrl = dataUrl;
+        if (imagePreviewThumb) imagePreviewThumb.src = dataUrl;
+        if (imagePreviewRow) imagePreviewRow.classList.add('open');
+        if (imageToggleBtn) imageToggleBtn.classList.add('active');
+      });
+    });
+  }
+  if (imagePreviewClearBtn) {
+    imagePreviewClearBtn.addEventListener('click', function () {
+      pendingImageDataUrl = '';
+      if (imageFileInput) imageFileInput.value = '';
+      if (imagePreviewRow) imagePreviewRow.classList.remove('open');
+      if (imageToggleBtn) imageToggleBtn.classList.remove('active');
+    });
+  }
 
   if (!passwordRequired || getStoredPassword()) {
     showChat();
@@ -3363,6 +3566,48 @@ function buildPromoterAdminHtml() {
   }
   .q-card .q-meta { font-size: 11.5px; color: var(--muted); margin-bottom: 6px; }
   .q-card .q-text { font-size: 14.5px; line-height: 1.7; white-space: pre-wrap; margin-bottom: 12px; }
+  .q-card .q-image {
+    display: block;
+    max-width: 220px;
+    max-height: 220px;
+    width: auto;
+    height: auto;
+    border-radius: 10px;
+    margin: -4px 0 12px;
+    cursor: pointer;
+    object-fit: cover;
+  }
+  .q-card .answer-image-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+  .q-card .answer-image-btn {
+    border: 1px solid #dfe2ec;
+    background: #fff;
+    color: var(--muted);
+    border-radius: 10px;
+    padding: 8px 14px;
+    font-size: 13px;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .q-card .answer-image-btn.active { border-color: var(--brand); color: var(--brand); }
+  .q-card .answer-image-preview {
+    display: none;
+    align-items: center;
+    gap: 8px;
+  }
+  .q-card .answer-image-preview.open { display: flex; }
+  .q-card .answer-image-preview img {
+    width: 44px; height: 44px; border-radius: 8px; object-fit: cover;
+    border: 1px solid #dfe2ec;
+  }
+  .q-card .answer-image-clear {
+    background: transparent; border: none; color: #b7bcc9; font-size: 18px;
+    cursor: pointer; padding: 0 4px; line-height: 1;
+  }
   .q-card textarea {
     width: 100%;
     min-height: 80px;
@@ -3688,6 +3933,32 @@ function buildPromoterAdminHtml() {
   var passwordRequired = ${config.promoterPagePassword ? 'true' : 'false'};
 
   function qs(id) { return document.getElementById(id); }
+
+  // 選んだ画像ファイルを、送信しやすいサイズに縮小してdata URLにする
+  // (スマホの写真をそのまま送ると大きすぎるため、長辺1280px・JPEG品質0.82に圧縮)。
+  function resizeImageFileToDataUrl(file, callback) {
+    var reader = new FileReader();
+    reader.onload = function () {
+      var img = new Image();
+      img.onload = function () {
+        var maxSide = 1280;
+        var w = img.width, h = img.height;
+        if (w > maxSide || h > maxSide) {
+          if (w >= h) { h = Math.round(h * maxSide / w); w = maxSide; }
+          else { w = Math.round(w * maxSide / h); h = maxSide; }
+        }
+        var canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+        callback(canvas.toDataURL('image/jpeg', 0.82));
+      };
+      img.onerror = function () { callback(null); };
+      img.src = reader.result;
+    };
+    reader.onerror = function () { callback(null); };
+    reader.readAsDataURL(file);
+  }
 
   function getStoredPassword() {
     try { return window.sessionStorage.getItem(STORAGE_KEY) || ''; } catch (e) { return ''; }
@@ -4027,9 +4298,64 @@ function buildPromoterAdminHtml() {
       qText.textContent = item.question;
       card.appendChild(qText);
 
+      if (item.questionImageUrl) {
+        var qImg = document.createElement('img');
+        qImg.className = 'q-image';
+        qImg.src = item.questionImageUrl;
+        qImg.alt = '質問の添付画像';
+        qImg.loading = 'lazy';
+        qImg.addEventListener('click', function () { window.open(item.questionImageUrl, '_blank', 'noopener'); });
+        card.appendChild(qImg);
+      }
+
       var textarea = document.createElement('textarea');
       textarea.placeholder = 'ここに回答を入力してください';
       card.appendChild(textarea);
+
+      // 回答に画像を添付するためのボタン(選ぶと縮小してから送信時にアップロードする)。
+      var answerImageData = '';
+      var imageRow = document.createElement('div');
+      imageRow.className = 'answer-image-row';
+      var imageBtn = document.createElement('button');
+      imageBtn.type = 'button';
+      imageBtn.className = 'answer-image-btn';
+      imageBtn.textContent = '📎 画像を添付';
+      var hiddenFileInput = document.createElement('input');
+      hiddenFileInput.type = 'file';
+      hiddenFileInput.accept = 'image/*';
+      hiddenFileInput.style.display = 'none';
+      var imagePreview = document.createElement('div');
+      imagePreview.className = 'answer-image-preview';
+      var previewImg = document.createElement('img');
+      imagePreview.appendChild(previewImg);
+      var previewClear = document.createElement('button');
+      previewClear.type = 'button';
+      previewClear.className = 'answer-image-clear';
+      previewClear.textContent = '×';
+      imagePreview.appendChild(previewClear);
+      imageRow.appendChild(imageBtn);
+      imageRow.appendChild(hiddenFileInput);
+      imageRow.appendChild(imagePreview);
+      card.appendChild(imageRow);
+
+      imageBtn.addEventListener('click', function () { hiddenFileInput.click(); });
+      hiddenFileInput.addEventListener('change', function () {
+        var file = hiddenFileInput.files && hiddenFileInput.files[0];
+        if (!file) return;
+        resizeImageFileToDataUrl(file, function (dataUrl) {
+          if (!dataUrl) return;
+          answerImageData = dataUrl;
+          previewImg.src = dataUrl;
+          imagePreview.classList.add('open');
+          imageBtn.classList.add('active');
+        });
+      });
+      previewClear.addEventListener('click', function () {
+        answerImageData = '';
+        hiddenFileInput.value = '';
+        imagePreview.classList.remove('open');
+        imageBtn.classList.remove('active');
+      });
 
       var actions = document.createElement('div');
       actions.className = 'q-actions';
@@ -4105,6 +4431,7 @@ function buildPromoterAdminHtml() {
           body: JSON.stringify({
             id: item.id,
             answer: answer,
+            answerImageData: answerImageData,
             staffName: answeringStaff ? answeringStaff.name : '',
             staffAccountId: answeringStaff ? answeringStaff.accountId : ''
           })
@@ -4352,7 +4679,16 @@ app.post('/api/ask-login', express.json(), (req, res) => {
 
 // Q&A表に答えが無かった分を保留シートに記録し、見落とし防止のため既存のChatwork
 // ルームに軽い通知を送る(新しいグループは作らず、返信も期待しない)。
-async function createSitePendingAndNotify(question, staff = null) {
+// 質問・回答に添付された画像のURL(Gyazoなど外部サービスに貼ったリンク)を、
+// Chatworkのメッセージ本文に追記するための共通処理。画像そのものはこちらでは
+// 保存せず、リンクの文字列だけをシートに記録する(溜まる心配がない)。
+function imageUrlLine(label, url) {
+  const trimmed = (url || '').trim();
+  if (!trimmed) return '';
+  return `\n${label}\n${trimmed}\n`;
+}
+
+async function createSitePendingAndNotify(question, staff = null, questionImageUrl = '') {
   let pendingId = null;
   try {
     pendingId = await appendPendingRow({
@@ -4362,6 +4698,7 @@ async function createSitePendingAndNotify(question, staff = null) {
       roomId: 'site-chat',
       questionMessageId: '',
       holderRequestMessageId: '',
+      questionImageUrl,
     });
   } catch (e) {
     console.error('保留シートへの記録に失敗しました:', e);
@@ -4378,8 +4715,9 @@ async function createSitePendingAndNotify(question, staff = null) {
       await sendMessage(
         mentionPrefix
         + `サイト内に未回答の質問が届いています。\n\n`
-        + `【質問】\n${question}\n\n`
-        + `▼回答はこちらから\nhttps://shp-company.site/qa_bot/promoter/`
+        + `【質問】\n${question}\n`
+        + imageUrlLine('▼添付画像', questionImageUrl)
+        + `\n▼回答はこちらから\nhttps://shp-company.site/qa_bot/promoter/`
       );
     } catch (e) {
       console.error('Chatworkへの通知送信に失敗しました:', e);
@@ -4391,7 +4729,7 @@ async function createSitePendingAndNotify(question, staff = null) {
 // FAQに即座にマッチして回答できた質問も、接客担当全員で共有する質問一覧
 // (/api/ask-list)に出てくるよう、answered状態のまま保留シートに記録しておく。
 // (Chatworkへの通知やプロモーターへの確認は不要なので、ここでは行わない)
-async function recordSiteAnswered(question, answer, staff = null) {
+async function recordSiteAnswered(question, answer, staff = null, questionImageUrl = '') {
   try {
     return await appendPendingRow({
       question,
@@ -4403,6 +4741,7 @@ async function recordSiteAnswered(question, answer, staff = null) {
       status: 'answered',
       answer,
       answeredBy: '自動回答(FAQ)',
+      questionImageUrl,
     });
   } catch (e) {
     console.error('保留シートへの記録(即答分)に失敗しました:', e);
@@ -4410,7 +4749,7 @@ async function recordSiteAnswered(question, answer, staff = null) {
   }
 }
 
-app.post('/api/ask', express.json(), async (req, res) => {
+app.post('/api/ask', express.json({ limit: '8mb' }), async (req, res) => {
   allowCors(req, res);
   if (!checkChatPassword(req)) {
     return res.status(401).json({ error: 'unauthorized' });
@@ -4423,11 +4762,23 @@ app.post('/api/ask', express.json(), async (req, res) => {
     const staffAccountId = ((req.body && req.body.staffAccountId) || '').trim();
     const staff = staffAccountId ? { name: staffName, accountId: staffAccountId } : null;
 
+    // 質問に添付された画像(ブラウザで選んだ画像データ)。共有ドライブの
+    // 「【SHP】QAサイト専用」フォルダにアップロードし、そのリンクを保留シートに記録する。
+    let imageUrl = '';
+    const imageData = (req.body && req.body.imageData) || '';
+    if (imageData) {
+      try {
+        imageUrl = await uploadImageToDrive(imageData, 'question');
+      } catch (e) {
+        console.error('質問の添付画像のアップロードに失敗しました:', e.message || e);
+      }
+    }
+
     const { rows } = await readFaqTable();
     let result = exactMatchQuestion(question, rows);
 
     if (result.matched && result.answer) {
-      const id = await recordSiteAnswered(question, result.answer, staff);
+      const id = await recordSiteAnswered(question, result.answer, staff, imageUrl);
       return res.json({ answered: true, answer: result.answer, id });
     }
 
@@ -4443,10 +4794,10 @@ app.post('/api/ask', express.json(), async (req, res) => {
           .join('\n');
         const leftover = formatLeftoverQuestions(unmatched).trim();
         if (!leftover) {
-          const id = await recordSiteAnswered(question, answerBody, staff);
+          const id = await recordSiteAnswered(question, answerBody, staff, imageUrl);
           return res.json({ answered: true, answer: answerBody, id });
         }
-        const pendingId = await createSitePendingAndNotify(leftover, staff);
+        const pendingId = await createSitePendingAndNotify(leftover, staff, imageUrl);
         return res.json({
           answered: false,
           pendingId,
@@ -4473,13 +4824,13 @@ app.post('/api/ask', express.json(), async (req, res) => {
     }
 
     if (result.matched && result.answer) {
-      const id = await recordSiteAnswered(question, result.answer, staff);
+      const id = await recordSiteAnswered(question, result.answer, staff, imageUrl);
       return res.json({ answered: true, answer: result.answer, id });
     }
 
     // Q&A表に答えが無い場合は、保留シートに記録したうえで、プロモーター用の
     // 回答管理ページ(/promoter)で回答してもらう。
-    const pendingId = await createSitePendingAndNotify(question, staff);
+    const pendingId = await createSitePendingAndNotify(question, staff, imageUrl);
 
     return res.json({
       answered: false,
@@ -4513,6 +4864,8 @@ app.get('/api/ask-list', async (req, res) => {
         answer: p.answer || '',
         askedAt: p.requestedAt,
         answeredAt: p.answeredAt || '',
+        questionImageUrl: p.questionImageUrl || '',
+        answerImageUrl: p.answerImageUrl || '',
       }))
       .reverse();
     return res.json({ items });
@@ -4534,7 +4887,11 @@ app.get('/api/ask-status', async (req, res) => {
     const target = pending.find((p) => p.id === id);
     if (!target) return res.json({ status: 'not_found' });
     if (target.status === 'answered') {
-      return res.json({ status: 'answered', answer: target.answer });
+      return res.json({
+        status: 'answered',
+        answer: target.answer,
+        answerImageUrl: target.answerImageUrl || '',
+      });
     }
     if (target.status === 'cancelled') {
       return res.json({ status: 'cancelled' });
@@ -4569,6 +4926,8 @@ app.post('/api/ask-delete', express.json(), async (req, res) => {
       answeredBy: '接客担当(自社サイト・取消)',
       answeredAt: new Date().toISOString(),
     });
+    // 取り消した質問に画像が添付されていれば、共有ドライブ上のコピーも消しておく。
+    deleteDriveImageIfAny(target.questionImageUrl).catch(() => {});
 
     return res.json({ ok: true });
   } catch (e) {
@@ -4598,6 +4957,10 @@ app.post('/api/ask-hide', express.json(), async (req, res) => {
     }
 
     await updatePendingRow(target.sheetRowNumber, { status: 'hidden' });
+    // 一覧から消えるタイミングで、添付されていた画像(質問・回答とも)も
+    // 共有ドライブから削除する(溜まりっぱなしにしないため)。
+    deleteDriveImageIfAny(target.questionImageUrl).catch(() => {});
+    deleteDriveImageIfAny(target.answerImageUrl).catch(() => {});
     return res.json({ ok: true });
   } catch (e) {
     console.error('/api/ask-hide エラー:', e);
@@ -4728,7 +5091,12 @@ app.get('/api/promoter-pending', async (req, res) => {
     const pending = await listPendingRows();
     const items = pending
       .filter((p) => p.status === 'pending' && p.roomId === 'site-chat')
-      .map((p) => ({ id: p.id, question: p.question, requestedAt: p.requestedAt }))
+      .map((p) => ({
+        id: p.id,
+        question: p.question,
+        requestedAt: p.requestedAt,
+        questionImageUrl: p.questionImageUrl || '',
+      }))
       .reverse();
     return res.json({ items });
   } catch (e) {
@@ -4737,7 +5105,7 @@ app.get('/api/promoter-pending', async (req, res) => {
   }
 });
 
-app.post('/api/promoter-answer', express.json(), async (req, res) => {
+app.post('/api/promoter-answer', express.json({ limit: '8mb' }), async (req, res) => {
   allowCors(req, res);
   if (!checkPromoterPassword(req)) {
     return res.status(401).json({ error: 'unauthorized' });
@@ -4747,6 +5115,18 @@ app.post('/api/promoter-answer', express.json(), async (req, res) => {
     const answer = ((req.body && req.body.answer) || '').trim();
     const staffName = ((req.body && req.body.staffName) || '').trim();
     if (!id || !answer) return res.status(400).json({ error: 'id and answer are required' });
+
+    // 回答に添付された画像(ブラウザで選んだ画像データ)。質問側と同様、
+    // 共有ドライブにアップロードしてそのリンクを記録する。
+    let answerImageUrl = '';
+    const answerImageData = (req.body && req.body.answerImageData) || '';
+    if (answerImageData) {
+      try {
+        answerImageUrl = await uploadImageToDrive(answerImageData, 'answer');
+      } catch (e) {
+        console.error('回答の添付画像のアップロードに失敗しました:', e.message || e);
+      }
+    }
 
     const pending = await listPendingRows();
     const target = pending.find((p) => p.id === id && p.roomId === 'site-chat');
@@ -4761,6 +5141,7 @@ app.post('/api/promoter-answer', express.json(), async (req, res) => {
       answer,
       answeredBy: staffName ? `${staffName}(サイト管理画面)` : 'プロモーター(サイト管理画面)',
       answeredAt: new Date().toISOString(),
+      answerImageUrl,
     });
 
     // 質問受付ページを閉じていても気づけるよう、通知を有効にしている端末全員に
@@ -4781,9 +5162,11 @@ app.post('/api/promoter-answer', express.json(), async (req, res) => {
       await sendMessage(
         mentionPrefix
         + `サイト内の質問に回答しました。\n\n`
-        + `【質問】\n${target.question}\n\n`
-        + `【回答】\n${answer}\n\n`
-        + `▼質問受付ページはこちら\nhttps://shp-company.site/qa_bot/`
+        + `【質問】\n${target.question}\n`
+        + imageUrlLine('▼質問の添付画像', target.questionImageUrl)
+        + `\n【回答】\n${answer}\n`
+        + imageUrlLine('▼回答の添付画像', answerImageUrl)
+        + `\n▼質問受付ページはこちら\nhttps://shp-company.site/qa_bot/`
       );
     } catch (e) {
       console.error('Chatworkへの回答済み通知の送信に失敗しました:', e);
@@ -4817,6 +5200,7 @@ app.post('/api/promoter-delete', express.json(), async (req, res) => {
       answeredBy: 'プロモーター(サイト管理画面・削除)',
       answeredAt: new Date().toISOString(),
     });
+    deleteDriveImageIfAny(target.questionImageUrl).catch(() => {});
 
     return res.json({ ok: true });
   } catch (e) {
