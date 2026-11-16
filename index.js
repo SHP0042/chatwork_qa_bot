@@ -522,12 +522,19 @@ async function appendPendingRow(entry) {
     entry.answerImageUrl || '',
     entry.autoAnsweredText || '',
   ];
-  // D:S列に限定し、OVERWRITEで追加する(INSERT_ROWSだとA〜C列の担当者一覧がずれてしまう)。
-  await sheets.spreadsheets.values.append({
+  // appendの自動テーブル判定を使うと、同じ行で隣接しているA〜C列(担当者一覧)と
+  // 繋がってしまい、D列ではなくA列から書き込まれることがあるため使わない。
+  // 代わりにD列のデータ数から次の行番号を自分で計算し、updateで直接その行に書き込む。
+  const current = await sheets.spreadsheets.values.get({
     spreadsheetId: config.sheetId,
-    range: `${config.pendingSheetName}!D:S`,
+    range: `${config.pendingSheetName}!D:D`,
+  });
+  const currentRows = current.data.values || [];
+  const targetRow = currentRows.length + 1;
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: config.sheetId,
+    range: `${config.pendingSheetName}!D${targetRow}:S${targetRow}`,
     valueInputOption: 'USER_ENTERED',
-    insertDataOption: 'OVERWRITE',
     requestBody: { values: [row] },
   });
   return id;
@@ -783,11 +790,18 @@ async function upsertStaffMember(name, accountId) {
     });
     return;
   }
-  await sheets.spreadsheets.values.append({
+  // appendの自動テーブル判定には頼らず、C列のデータ数から次の行番号を
+  // 自分で計算し、updateで直接その行に書き込む。
+  const current = await sheets.spreadsheets.values.get({
     spreadsheetId: config.sheetId,
-    range: `${config.pendingSheetName}!A:C`,
+    range: `${config.pendingSheetName}!C:C`,
+  });
+  const currentRows = current.data.values || [];
+  const targetRow = currentRows.length + 1;
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: config.sheetId,
+    range: `${config.pendingSheetName}!A${targetRow}:C${targetRow}`,
     valueInputOption: 'USER_ENTERED',
-    insertDataOption: 'OVERWRITE',
     requestBody: { values: [[STAFF_ROLE_LABEL, name, accountId]] },
   });
 }
@@ -848,11 +862,18 @@ async function upsertPromoterStaffMember(name, accountId) {
     });
     return;
   }
-  await sheets.spreadsheets.values.append({
+  // appendの自動テーブル判定には頼らず、C列のデータ数から次の行番号を
+  // 自分で計算し、updateで直接その行に書き込む。
+  const current = await sheets.spreadsheets.values.get({
     spreadsheetId: config.sheetId,
-    range: `${config.pendingSheetName}!A:C`,
+    range: `${config.pendingSheetName}!C:C`,
+  });
+  const currentRows = current.data.values || [];
+  const targetRow = currentRows.length + 1;
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: config.sheetId,
+    range: `${config.pendingSheetName}!A${targetRow}:C${targetRow}`,
     valueInputOption: 'USER_ENTERED',
-    insertDataOption: 'OVERWRITE',
     requestBody: { values: [[PROMOTER_ROLE_LABEL, name, accountId]] },
   });
 }
