@@ -282,6 +282,19 @@ async function uploadImageToDrive(dataUrl, baseName) {
   return `https://drive.google.com/uc?export=view&id=${fileId}`;
 }
 
+// 画像アップロードが失敗した際、ログを見られないオーナーさんにも原因が
+// わかるよう、Chatworkに直接エラー内容を送る(一時的な調査用。原因が
+// 分かって安定稼働したら、このまま残しても害はないが削除してもよい)。
+async function notifyImageUploadFailure(label, err) {
+  const detail = (err && (err.errors ? JSON.stringify(err.errors) : err.message)) || String(err);
+  console.error(`${label}の添付画像のアップロードに失敗しました:`, detail);
+  try {
+    await sendMessage(`⚠️【画像アップロード失敗】${label}\n\n${detail}`);
+  } catch (e2) {
+    console.error('画像アップロード失敗の通知送信にも失敗しました:', e2);
+  }
+}
+
 let cachedFaqTitle = null;
 // overrideGid / overrideName を渡すと、環境変数の設定に関係なく一時的に別タブを指定できる
 // （/debug-sheet?gid=... や ?name=... でRenderを再デプロイせずに他タブを確認するために使用）。
@@ -1399,7 +1412,7 @@ async function runFollowupCheck({ log = console.log } = {}) {
         // こちらも固定の環境変数ではなく、サイト内の「プロモーター」一覧
         // (Bot_PromoterStaff)全員にTOを付けて催促する。
         const staffMembers = await listPromoterStaffMembers();
-        const mentions = staffMembers.map((s) => mentionTag(s.accountId, s.name)).join(' ');
+        const mentions = staffMembers.map((s) => mentionTag(s.accountId, s.name)).join('\n');
         const mentionPrefix = mentions ? `${mentions}\n` : '';
         await sendMessage(
           mentionPrefix
@@ -4690,7 +4703,7 @@ async function createSitePendingAndNotify(question, staff = null, questionImageU
       // 固定の環境変数(HOLDER_ACCOUNT_IDS)ではなく、サイト内の「プロモーター」一覧
       // (Bot_PromoterStaff、追加・削除した人)全員にTOを付けて知らせる。
       const staffMembers = await listPromoterStaffMembers();
-      const mentions = staffMembers.map((s) => mentionTag(s.accountId, s.name)).join(' ');
+      const mentions = staffMembers.map((s) => mentionTag(s.accountId, s.name)).join('\n');
       const mentionPrefix = mentions ? `${mentions}\n` : '';
       await sendMessage(
         mentionPrefix
@@ -4750,7 +4763,7 @@ app.post('/api/ask', express.json({ limit: '8mb' }), async (req, res) => {
       try {
         imageUrl = await uploadImageToDrive(imageData, 'question');
       } catch (e) {
-        console.error('質問の添付画像のアップロードに失敗しました:', e.message || e);
+        await notifyImageUploadFailure('質問の添付画像', e);
       }
     }
 
@@ -5098,7 +5111,7 @@ app.post('/api/promoter-answer', express.json({ limit: '8mb' }), async (req, res
       try {
         answerImageUrl = await uploadImageToDrive(answerImageData, 'answer');
       } catch (e) {
-        console.error('回答の添付画像のアップロードに失敗しました:', e.message || e);
+        await notifyImageUploadFailure('回答の添付画像', e);
       }
     }
 
