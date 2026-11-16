@@ -36,7 +36,7 @@ const config = {
   sheetId: required('SHEET_ID', '1wSDLfoGZ--GEQR3jWWzm_eAE_goMKKy1xLA-u4IumG0'),
   faqSheetGid: process.env.FAQ_SHEET_GID || '929625368',
   faqSheetName: process.env.FAQ_SHEET_NAME || null,
-  pendingSheetName: process.env.PENDING_SHEET_NAME || 'Bot_Pending',
+  pendingSheetName: process.env.PENDING_SHEET_NAME || 'Q＆A専用',
   // 「対応」という単語は回答文の中にも普通に出てくるため、見出し行の自動判定は
   // 誤検出しやすい。実際のシート構造(見出しは3行目)を既定値として直接指定する。
   faqHeaderRow: parseInt(process.env.FAQ_HEADER_ROW || '3', 10),
@@ -364,21 +364,14 @@ const PENDING_HEADERS = [
   '自動回答済み部分',
 ];
 
+// シートが無い場合でも、勝手に新しいタブを作ることはしない(意図しないタブが
+// スプレッドシートに増えてしまうため)。見つからない場合はエラーにして、
+// シート名の設定を確認してもらう。
 async function ensurePendingSheetExists() {
   const title = config.pendingSheetName;
-  const sheets = await getSheets();
   const exists = await sheetTabExists(title);
   if (!exists) {
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId: config.sheetId,
-      requestBody: { requests: [{ addSheet: { properties: { title } } }] },
-    });
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: config.sheetId,
-      range: `${title}!A1`,
-      valueInputOption: 'RAW',
-      requestBody: { values: [PENDING_HEADERS] },
-    });
+    throw new Error(`スプレッドシートに「${title}」という名前のシートが見つかりません。PENDING_SHEET_NAMEの設定、またはシート名をご確認ください。`);
   }
 }
 
@@ -584,21 +577,14 @@ async function updatePendingRow(sheetRowNumber, updates) {
 // ============================================================
 const PUSH_HEADERS = ['エンドポイント', 'p256dh', 'auth', '登録日時'];
 
+// シートが無い場合でも、勝手に新しいタブを作ることはしない(意図しないタブが
+// スプレッドシートに増えてしまうため)。見つからない場合はエラーにして、
+// シート名の設定を確認してもらう。
 async function ensurePushSheetExists() {
   const title = config.pushSheetName;
-  const sheets = await getSheets();
   const exists = await sheetTabExists(title);
   if (!exists) {
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId: config.sheetId,
-      requestBody: { requests: [{ addSheet: { properties: { title } } }] },
-    });
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: config.sheetId,
-      range: `${title}!A1`,
-      valueInputOption: 'RAW',
-      requestBody: { values: [PUSH_HEADERS] },
-    });
+    throw new Error(`スプレッドシートに「${title}」という名前のシートが見つかりません。PUSH_SHEET_NAMEの設定、またはシート名をご確認ください。`);
   }
 }
 
@@ -732,21 +718,14 @@ async function sendPushToAllSubscribers(payload) {
 // ============================================================
 const STAFF_HEADERS = ['名前', 'ChatworkアカウントID'];
 
+// シートが無い場合でも、勝手に新しいタブを作ることはしない(意図しないタブが
+// スプレッドシートに増えてしまうため)。見つからない場合はエラーにして、
+// シート名の設定を確認してもらう。
 async function ensureStaffSheetExists() {
   const title = config.staffSheetName;
-  const sheets = await getSheets();
   const exists = await sheetTabExists(title);
   if (!exists) {
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId: config.sheetId,
-      requestBody: { requests: [{ addSheet: { properties: { title } } }] },
-    });
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: config.sheetId,
-      range: `${title}!A1`,
-      valueInputOption: 'RAW',
-      requestBody: { values: [STAFF_HEADERS] },
-    });
+    throw new Error(`スプレッドシートに「${title}」という名前のシートが見つかりません。STAFF_SHEET_NAMEの設定、またはシート名をご確認ください。`);
   }
 }
 
@@ -827,21 +806,14 @@ async function removeStaffMember(accountId) {
 // ============================================================
 const PROMOTER_STAFF_HEADERS = ['名前', 'ChatworkアカウントID'];
 
+// シートが無い場合でも、勝手に新しいタブを作ることはしない(意図しないタブが
+// スプレッドシートに増えてしまうため)。見つからない場合はエラーにして、
+// シート名の設定を確認してもらう。
 async function ensurePromoterStaffSheetExists() {
   const title = config.promoterStaffSheetName;
-  const sheets = await getSheets();
   const exists = await sheetTabExists(title);
   if (!exists) {
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId: config.sheetId,
-      requestBody: { requests: [{ addSheet: { properties: { title } } }] },
-    });
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: config.sheetId,
-      range: `${title}!A1`,
-      valueInputOption: 'RAW',
-      requestBody: { values: [PROMOTER_STAFF_HEADERS] },
-    });
+    throw new Error(`スプレッドシートに「${title}」という名前のシートが見つかりません。PROMOTER_STAFF_SHEET_NAMEの設定、またはシート名をご確認ください。`);
   }
 }
 
