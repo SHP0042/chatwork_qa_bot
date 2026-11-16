@@ -86,7 +86,7 @@ const config = {
   // 質問・回答に添付された画像のアップロード先(共有ドライブ内のフォルダ)。
   // 既定値は「【SHP】QAサイト専用」フォルダ。サービスアカウントをこのフォルダに
   // 「コンテンツ管理者」以上で追加しておく必要がある。
-  qaImageDriveFolderId: process.env.QA_IMAGE_DRIVE_FOLDER_ID || '1r5L1-oV0dUoCnDKVFleSUHEbObT5-3lM',
+  qaImageDriveFolderId: process.env.QA_IMAGE_DRIVE_FOLDER_ID || '13wEquJijckWvQ9QvvdLdZW8Udj-_Bwvy',
 };
 
 function assertConfig() {
