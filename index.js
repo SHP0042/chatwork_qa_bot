@@ -933,9 +933,13 @@ matched=false としてください。
 同様に、「パソコン」「PC」のような単語が共通しているだけで、実際に聞かれている内容が別の話題（例：
 「体調不良などで数日パソコンが使えない場合のサポート体制」についての質問と、「推奨するPCのスペックや対応OS」
 についての項目は別物）である場合も、同じ項目とは見なさず matched=false としてください。
+判定の最終チェックとして、選んだ項目の「回答」を、質問者にそのまま送ったとして内容がちゃんと噛み合うかを
+必ず考えてください。表の項目の回答文が、質問で聞かれていることに直接答えていない(話題がずれている、
+聞かれていない情報ばかりが書かれている等)場合は、たとえ質問文の言い回しが似ていても matched=false
+としてください。
 表に該当する項目が無い、もしくは自信が持てない場合も matched=false としてください
 （answerやrowNumberは省略してよい）。
-confidenceは0〜1で、0.75未満の場合は原則matched=falseとしてください。`;
+confidenceは0〜1で、0.85未満の場合は原則matched=falseとしてください。`;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -972,7 +976,7 @@ async function matchQuestion(question, faqRows) {
       } catch (e) {
         throw new Error(`Geminiの応答をJSONとして解釈できませんでした: ${text}`);
       }
-      if (parsed.confidence !== undefined && parsed.confidence < 0.75) {
+      if (parsed.confidence !== undefined && parsed.confidence < 0.85) {
         parsed.matched = false;
       }
       return parsed;
