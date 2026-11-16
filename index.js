@@ -298,6 +298,18 @@ async function notifyImageUploadFailure(label, err) {
   }
 }
 
+// 保留シート(Q＆A専用)への書き込みに失敗した場合、サーバーのログにしか残らないと
+// 気づけないため、画像アップロード失敗と同様にChatworkへ直接通知する。
+async function notifyPendingSaveFailure(question, err) {
+  const detail = (err && (err.errors ? JSON.stringify(err.errors) : err.message)) || String(err);
+  console.error('保留シートへの記録に失敗しました:', detail);
+  try {
+    await sendMessage(`⚠️【質問の保存に失敗】サイトでの質問が「Q＆A専用」シートに保存できませんでした。\n\n【質問】${question}\n\n【エラー内容】${detail}`);
+  } catch (e2) {
+    console.error('保存失敗の通知送信にも失敗しました:', e2);
+  }
+}
+
 let cachedFaqTitle = null;
 // overrideGid / overrideName を渡すと、環境変数の設定に関係なく一時的に別タブを指定できる
 // （/debug-sheet?gid=... や ?name=... でRenderを再デプロイせずに他タブを確認するために使用）。
@@ -4797,7 +4809,7 @@ async function createSitePendingAndNotify(question, staff = null, questionImageU
       autoAnsweredText,
     });
   } catch (e) {
-    console.error('保留シートへの記録に失敗しました:', e);
+    await notifyPendingSaveFailure(question, e);
   }
   // 土日・祝日はChatworkへの通知を送らない(保留シートへの記録は行うので、
   // 平常営業日になれば次の催促チェックで通知される)。
@@ -4844,7 +4856,7 @@ async function recordSiteAnswered(question, answer, staff = null, questionImageU
       questionImageUrl,
     });
   } catch (e) {
-    console.error('保留シートへの記録(即答分)に失敗しました:', e);
+    await notifyPendingSaveFailure(question, e);
     return null;
   }
 }
