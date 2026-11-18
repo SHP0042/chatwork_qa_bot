@@ -469,7 +469,14 @@ async function readFaqTable(overrideGid, overrideName) {
           ? answerParts.map((part) => `[info]\n${part}\n[/info]`).join('\n')
           : answerParts.join('');
       if (!question && !answer) continue;
-      rows.push({ rowNumber: i + 1, question, answer, questionColumn: block.questionCol });
+      // 同じ物理行に複数の質問列(例: B列とL列)の両方に内容が入っている場合、
+      // rowNumberだけではその行の中のどちらの項目なのかを一意に特定できない。
+      // これにより、AIが選んだ項目と、実際に回答を取り出す際に見つかる項目が
+      // 食い違う(=AIはL列の項目のつもりでも、配列内で先に見つかるB列の項目の
+      // 回答が誤って使われる)不具合があったため、「行番号+質問列」を組み合わせた
+      // 一意なentryIdを持たせ、以降の特定には必ずentryIdを使う。
+      const entryId = `${i + 1}:${block.questionCol}`;
+      rows.push({ entryId, rowNumber: i + 1, question, answer, questionColumn: block.questionCol });
     }
   }
   return {
@@ -905,9 +912,9 @@ const RESPONSE_SCHEMA = {
       type: SchemaType.BOOLEAN,
       description: 'Q&A表の中に、質問に十分な確度で答えられる項目があるか',
     },
-    rowNumber: {
-      type: SchemaType.INTEGER,
-      description: 'matched=true の場合、根拠にした表の行番号（スプレッドシートの実際の行番号）',
+    entryId: {
+      type: SchemaType.STRING,
+      description: 'matched=true の場合、根拠にした表の項目のID（各行の先頭にある「ID: 」の値をそのまま返す）',
     },
     answer: {
       type: SchemaType.STRING,
@@ -925,7 +932,7 @@ const SYSTEM_INSTRUCTION = `あなたは、Shopeeなどの海外ECモールで�
 必ず与えられた「Q&A表」に書かれている内容だけを根拠に回答してください。
 表に無い内容を推測したり、一般知識で補ったりすることは絶対にしないでください。
 表の中に、質問で実際に聞かれている内容と実質的に同じことを答えている項目がある場合のみ matched=true とし、
-その行番号(rowNumber)を返してください。実際にお客様へ送る回答文は、あなたが書いた
+そのID(entryId)を返してください。実際にお客様へ送る回答文は、あなたが書いた
 answerではなく表に書かれている内容がそのまま使われるため、answerは簡単な要約で構いません。
 「〜の条件は？」のように聞き方や話題のジャンル（条件・資格など）が似ているだけで、実際に聞かれている対象
 （例：出品数の基準、サポート保証の条件、講座延長の条件はそれぞれ別物）が違う場合は、同じ項目とは見なさず
@@ -938,7 +945,7 @@ matched=false としてください。
 聞かれていない情報ばかりが書かれている等)場合は、たとえ質問文の言い回しが似ていても matched=false
 としてください。
 表に該当する項目が無い、もしくは自信が持てない場合も matched=false としてください
-（answerやrowNumberは省略してよい）。
+（answerやentryIdは省略してよい）。
 confidenceは0〜1で、0.85未満の場合は原則matched=falseとしてください。`;
 
 function sleep(ms) {
@@ -957,7 +964,7 @@ async function matchQuestion(question, faqRows) {
   });
 
   const table = faqRows
-    .map((r) => `行${r.rowNumber}\tQ: ${r.question}\tA: ${r.answer}`)
+    .map((r) => `ID: ${r.entryId}\tQ: ${r.question}\tA: ${r.answer}`)
     .join('\n');
 
   const prompt = `# Q&A表\n${table || '(表は現在空です)'}\n\n# お客様からの質問\n${question}\n\n上記のQ&A表だけを根拠にJSON形式で回答してください。`;
@@ -1227,10 +1234,12 @@ async function matchCandidatesForPartialAnswers(candidates, faqRows) {
       try {
         r = await matchQuestion(q, faqRows);
         // 個別質問の時と同様、実際に送る文面はGemini自身の生成結果ではなく表の内容をそのまま使う。
-        if (r.matched && r.rowNumber) {
-          const matchedRow = faqRows.find((row) => row.rowNumber === r.rowNumber);
+        // 特定にはrowNumberではなく一意なentryIdを使う(理由はreadFaqTable内のコメント参照)。
+        if (r.matched && r.entryId) {
+          const matchedRow = faqRows.find((row) => row.entryId === r.entryId);
           if (matchedRow) {
             r.answer = matchedRow.answer;
+            r.rowNumber = matchedRow.rowNumber;
           } else {
             r.matched = false;
           }
@@ -1327,13 +1336,15 @@ async function handleQuestion({ question, senderId, messageId, roomId, log }) {
 
     try {
       result = await matchQuestion(question, rows);
-      // Geminiは「どの行が一致するか」の判定役であり、実際にお客様へ送る文面は
+      // Geminiは「どの項目が一致するか」の判定役であり、実際にお客様へ送る文面は
       // 表に書かれている内容をそのまま使う（Gemini自身に回答文を書かせると、
       // 複数列(C〜F等)の内容が要約されて一部消えたり、[info]枠が失われたりするため）。
-      if (result.matched && result.rowNumber) {
-        const matchedRow = rows.find((r) => r.rowNumber === result.rowNumber);
+      // 特定にはrowNumberではなく一意なentryIdを使う(理由はreadFaqTable内のコメント参照)。
+      if (result.matched && result.entryId) {
+        const matchedRow = rows.find((r) => r.entryId === result.entryId);
         if (matchedRow) {
           result.answer = matchedRow.answer;
+          result.rowNumber = matchedRow.rowNumber;
         } else {
           result.matched = false;
         }
@@ -5059,7 +5070,7 @@ function allowCors(req, res) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-chat-password, x-promoter-password');
 }
 
-['/api/ask-login', '/api/ask', '/api/ask-list', '/api/ask-status', '/api/ask-delete', '/api/ask-hide', '/api/promoter-login', '/api/promoter-pending', '/api/promoter-answer', '/api/promoter-delete', '/api/push-subscribe', '/api/staff-list', '/api/staff-add', '/api/staff-delete', '/api/promoter-staff-list', '/api/promoter-staff-add', '/api/promoter-staff-delete'].forEach(
+['/api/ask-login', '/api/ask', '/api/ask-list', '/api/ask-status', '/api/ask-delete', '/api/ask-hide', '/api/promoter-login', '/api/promoter-pending', '/api/promoter-answered', '/api/promoter-answer', '/api/promoter-answer-edit', '/api/promoter-delete', '/api/push-subscribe', '/api/staff-list', '/api/staff-add', '/api/staff-delete', '/api/promoter-staff-list', '/api/promoter-staff-add', '/api/promoter-staff-delete'].forEach(
   (path) => {
     app.options(path, (req, res) => {
       allowCors(req, res);
@@ -5252,10 +5263,12 @@ app.post('/api/ask', express.json({ limit: '20mb' }), async (req, res) => {
     try {
       result = await matchQuestion(question, rows);
       // 実際に表示する回答文は、Chatworkボットと同様に表の内容をそのまま使う。
-      if (result.matched && result.rowNumber) {
-        const matchedRow = rows.find((r) => r.rowNumber === result.rowNumber);
+      // 特定にはrowNumberではなく一意なentryIdを使う(理由はreadFaqTable内のコメント参照)。
+      if (result.matched && result.entryId) {
+        const matchedRow = rows.find((r) => r.entryId === result.entryId);
         if (matchedRow) {
           result.answer = matchedRow.answer;
+          result.rowNumber = matchedRow.rowNumber;
         } else {
           result.matched = false;
         }
