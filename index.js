@@ -3196,6 +3196,12 @@ function buildChatPageHtml() {
         if (activeRoomId === room.id) room.unread = false;
         if (prev && prev.status === 'pending' && room.status !== 'pending') {
           justResolved.push(room);
+        } else if (prev && prev.status === 'answered' && room.status === 'answered' && prev.updatedAt !== room.updatedAt) {
+          // 一度回答済みになった質問に、後からプロモーターが回答を修正した場合も、
+          // 新しい内容が届いたとわかるように知らせる。
+          room._answerUpdated = true;
+          if (activeRoomId !== room.id) room.unread = true;
+          justResolved.push(room);
         }
         delete prevById[it.id];
         return room;
@@ -3214,7 +3220,17 @@ function buildChatPageHtml() {
       if (activeRoomId === room.id) {
         var card = qs('pendingStatusCard');
         if (card) card.remove();
-        if (room.status === 'answered') {
+        if (room.status === 'answered' && room._answerUpdated) {
+          // 修正の場合は、以前の回答がすでに表示されているので追加せず、
+          // 会話全体を最新の内容で描き直す(修正後の回答に置き換わる)。
+          renderRoomDetail(room);
+          var rows = chatBody.querySelectorAll('.bubble-row');
+          var lastRow = rows[rows.length - 1];
+          if (lastRow) {
+            lastRow.classList.add('bubble-highlight');
+            setTimeout(function () { lastRow.classList.remove('bubble-highlight'); }, 2200);
+          }
+        } else if (room.status === 'answered') {
           var last = room.messages[room.messages.length - 1];
           var built = buildBubbleRow('bot', last.text, last.at, last.imageUrl);
           built.row.classList.add('bubble-highlight');
@@ -3224,7 +3240,7 @@ function buildChatPageHtml() {
         }
       }
       if (room.status === 'answered') {
-        showToast('回答が届きました：' + truncateText(room.question, 26));
+        showToast((room._answerUpdated ? '回答が更新されました：' : '回答が届きました：') + truncateText(room.question, 26));
         playNotifySound();
       }
     });
@@ -3575,6 +3591,20 @@ function buildPromoterAdminHtml() {
     transition: transform 0.1s ease, background 0.15s ease, box-shadow 0.15s ease;
   }
   .admin-toolbar button:hover { background: #fff6ea; transform: scale(1.04); box-shadow: 0 2px 8px rgba(224,138,44,0.18); }
+  .admin-tabs { display: flex; gap: 8px; margin: 4px 2px 10px; }
+  .admin-tabs button.admin-tab-btn {
+    border: 1px solid #dfe2ec;
+    background: #fff;
+    color: var(--muted);
+    border-radius: 10px;
+    padding: 7px 14px;
+    font-size: 12.5px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: transform 0.1s ease, background 0.15s ease, box-shadow 0.15s ease, color 0.15s ease;
+  }
+  .admin-tabs button.admin-tab-btn:hover { background: #fff6ea; transform: scale(1.04); }
+  .admin-tabs button.admin-tab-btn.active { background: var(--brand); border-color: var(--brand); color: #fff; }
   .empty-note {
     background: #fff;
     border: 1px solid #eef1f6;
@@ -3928,6 +3958,10 @@ function buildPromoterAdminHtml() {
 
   <div id="adminWrap" class="admin-wrap">
     <div class="admin-column">
+      <div class="admin-tabs">
+        <button type="button" id="tabPendingBtn" class="admin-tab-btn active">未回答</button>
+        <button type="button" id="tabAnsweredBtn" class="admin-tab-btn">回答済み</button>
+      </div>
       <div class="admin-toolbar">
         <div class="count" id="pendingCount">未回答の質問を確認中...</div>
         <button id="refreshButton">更新</button>
@@ -4102,6 +4136,9 @@ function buildPromoterAdminHtml() {
   var listBody = qs('listBody');
   var pendingCount = qs('pendingCount');
   var refreshButton = qs('refreshButton');
+  var tabPendingBtn = qs('tabPendingBtn');
+  var tabAnsweredBtn = qs('tabAnsweredBtn');
+  var currentTab = 'pending';
   var refreshTimer = null;
 
   function showGate(message) {
@@ -4117,9 +4154,9 @@ function buildPromoterAdminHtml() {
     gateWrap.style.display = 'none';
     staffGateWrap.style.display = 'none';
     adminWrap.style.display = 'flex';
-    loadPending();
+    loadCurrent();
     if (!refreshTimer) {
-      refreshTimer = setInterval(loadPending, REFRESH_INTERVAL_MS);
+      refreshTimer = setInterval(loadCurrent, REFRESH_INTERVAL_MS);
     }
   }
 
@@ -4601,6 +4638,218 @@ function buildPromoterAdminHtml() {
     });
   }
 
+  // 回答済みの質問も「質問と同じようにずっと残しておきたい」という要望に応じて、
+  // こちらの一覧(回答済みタブ)では消えずに見返せるようにし、回答そのものも
+  // 後から書き換えられるようにしてある(上書き式。履歴としては残らない)。
+  function renderAnsweredList(items) {
+    listBody.innerHTML = '';
+    pendingCount.textContent = '回答済みの質問: ' + items.length + '件';
+    if (!items.length) {
+      var empty = document.createElement('div');
+      empty.className = 'empty-note';
+      empty.textContent = '回答済みの質問はまだありません。';
+      listBody.appendChild(empty);
+      return;
+    }
+    items.forEach(function (item) {
+      var card = document.createElement('div');
+      card.className = 'q-card';
+
+      var meta = document.createElement('div');
+      meta.className = 'q-meta';
+      meta.textContent = formatWhen(item.requestedAt) + ' 受付 → ' + formatWhen(item.answeredAt) + ' 回答'
+        + (item.answeredBy ? '（' + item.answeredBy + '）' : '');
+      card.appendChild(meta);
+
+      var qText = document.createElement('div');
+      qText.className = 'q-text';
+      qText.textContent = item.question;
+      card.appendChild(qText);
+
+      if (item.questionImageUrl) {
+        if (isPdfAttachmentUrl(item.questionImageUrl)) {
+          var qPdfLink = document.createElement('a');
+          qPdfLink.className = 'q-pdf-link';
+          qPdfLink.href = item.questionImageUrl;
+          qPdfLink.target = '_blank';
+          qPdfLink.rel = 'noopener';
+          qPdfLink.textContent = '📄 質問の添付ファイルを開く';
+          card.appendChild(qPdfLink);
+        } else {
+          var qImg = document.createElement('img');
+          qImg.className = 'q-image';
+          qImg.src = item.questionImageUrl;
+          qImg.alt = '質問の添付画像';
+          qImg.loading = 'lazy';
+          qImg.addEventListener('click', function () { window.open(item.questionImageUrl, '_blank', 'noopener'); });
+          card.appendChild(qImg);
+        }
+      }
+
+      if (item.autoAnsweredText) {
+        var autoNote = document.createElement('div');
+        autoNote.className = 'q-auto-answered-note';
+        var autoLabel = document.createElement('div');
+        autoLabel.className = 'q-auto-answered-label';
+        autoLabel.textContent = 'すでに自動回答済みの部分:';
+        autoNote.appendChild(autoLabel);
+        var autoBody = document.createElement('div');
+        autoBody.innerHTML = formatAutoAnswerHtml(item.autoAnsweredText);
+        autoNote.appendChild(autoBody);
+        card.appendChild(autoNote);
+      }
+
+      if (item.answerImageUrl) {
+        var aLabel = document.createElement('div');
+        aLabel.className = 'q-auto-answered-label';
+        aLabel.textContent = '現在の回答に添付されている画像・ファイル:';
+        card.appendChild(aLabel);
+        if (isPdfAttachmentUrl(item.answerImageUrl)) {
+          var aPdfLink = document.createElement('a');
+          aPdfLink.className = 'q-pdf-link';
+          aPdfLink.href = item.answerImageUrl;
+          aPdfLink.target = '_blank';
+          aPdfLink.rel = 'noopener';
+          aPdfLink.textContent = '📄 回答の添付ファイルを開く';
+          card.appendChild(aPdfLink);
+        } else {
+          var aImg = document.createElement('img');
+          aImg.className = 'q-image';
+          aImg.src = item.answerImageUrl;
+          aImg.alt = '回答の添付画像';
+          aImg.loading = 'lazy';
+          aImg.addEventListener('click', function () { window.open(item.answerImageUrl, '_blank', 'noopener'); });
+          card.appendChild(aImg);
+        }
+      }
+
+      // 現在の回答をそのまま編集できるよう、テキストエリアに最初から入れておく。
+      var textarea = document.createElement('textarea');
+      textarea.value = item.answer || '';
+      card.appendChild(textarea);
+
+      var answerImageData = '';
+      var imageRow = document.createElement('div');
+      imageRow.className = 'answer-image-row';
+      var imageBtn = document.createElement('button');
+      imageBtn.type = 'button';
+      imageBtn.className = 'answer-image-btn';
+      imageBtn.textContent = '📎 新しい画像・PDFに差し替える';
+      var hiddenFileInput = document.createElement('input');
+      hiddenFileInput.type = 'file';
+      hiddenFileInput.accept = 'image/*,application/pdf';
+      hiddenFileInput.style.display = 'none';
+      var imagePreview = document.createElement('div');
+      imagePreview.className = 'answer-image-preview';
+      var previewImg = document.createElement('img');
+      imagePreview.appendChild(previewImg);
+      var previewName = document.createElement('span');
+      previewName.className = 'answer-image-preview-name';
+      previewName.style.display = 'none';
+      imagePreview.appendChild(previewName);
+      var previewClear = document.createElement('button');
+      previewClear.type = 'button';
+      previewClear.className = 'answer-image-clear';
+      previewClear.textContent = '×';
+      imagePreview.appendChild(previewClear);
+      imageRow.appendChild(imageBtn);
+      imageRow.appendChild(hiddenFileInput);
+      imageRow.appendChild(imagePreview);
+      card.appendChild(imageRow);
+
+      imageBtn.addEventListener('click', function () { hiddenFileInput.click(); });
+      hiddenFileInput.addEventListener('change', function () {
+        var file = hiddenFileInput.files && hiddenFileInput.files[0];
+        if (!file) return;
+        resizeImageFileToDataUrl(file, function (dataUrl) {
+          if (!dataUrl) return;
+          answerImageData = dataUrl;
+          if (isPdfAttachmentUrl(dataUrl)) {
+            previewImg.style.display = 'none';
+            previewName.textContent = '📄 ' + (file.name || 'PDFファイル');
+            previewName.style.display = '';
+          } else {
+            previewImg.style.display = '';
+            previewImg.src = dataUrl;
+            previewName.style.display = 'none';
+          }
+          imagePreview.classList.add('open');
+          imageBtn.classList.add('active');
+        });
+      });
+      previewClear.addEventListener('click', function () {
+        answerImageData = '';
+        hiddenFileInput.value = '';
+        imagePreview.classList.remove('open');
+        imageBtn.classList.remove('active');
+      });
+
+      var actions = document.createElement('div');
+      actions.className = 'q-actions';
+      var btn = document.createElement('button');
+      btn.className = 'answer-btn';
+      btn.textContent = 'この内容に更新する';
+      actions.appendChild(btn);
+      card.appendChild(actions);
+
+      var note = document.createElement('div');
+      card.appendChild(note);
+
+      btn.addEventListener('click', function () {
+        var answer = textarea.value.trim();
+        if (!answer) {
+          note.className = 'q-error-note';
+          note.textContent = '回答を入力してください。';
+          return;
+        }
+        btn.disabled = true;
+        note.className = '';
+        note.textContent = '';
+        var answeringStaff = getStoredStaff();
+        fetch('/api/promoter-answer-edit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-promoter-password': getStoredPassword() },
+          body: JSON.stringify({
+            id: item.id,
+            answer: answer,
+            answerImageData: answerImageData,
+            staffName: answeringStaff ? answeringStaff.name : ''
+          })
+        })
+          .then(function (res) {
+            if (res.status === 401) {
+              showGate('パスワードが違うようです。もう一度入力してください。');
+              return null;
+            }
+            return res.json();
+          })
+          .then(function (data) {
+            if (!data) return;
+            if (data.ok) {
+              note.className = 'q-sent-note';
+              note.textContent = '回答を更新しました。';
+              setTimeout(loadAnswered, 600);
+            } else if (data.error === 'not_found') {
+              note.className = 'q-error-note';
+              note.textContent = 'この質問が見つかりませんでした。一覧を更新します。';
+              setTimeout(loadAnswered, 1200);
+            } else {
+              btn.disabled = false;
+              note.className = 'q-error-note';
+              note.textContent = 'サーバー側で問題が発生しました。少し時間をおいてもう一度お試しください。';
+            }
+          })
+          .catch(function () {
+            btn.disabled = false;
+            note.className = 'q-error-note';
+            note.textContent = '通信エラーが発生しました。もう一度お試しください。';
+          });
+      });
+
+      listBody.appendChild(card);
+    });
+  }
+
   function loadPending() {
     fetch('/api/promoter-pending', {
       headers: { 'x-promoter-password': getStoredPassword() }
@@ -4621,8 +4870,53 @@ function buildPromoterAdminHtml() {
       });
   }
 
+  function loadAnswered() {
+    fetch('/api/promoter-answered', {
+      headers: { 'x-promoter-password': getStoredPassword() }
+    })
+      .then(function (res) {
+        if (res.status === 401) {
+          showGate('パスワードが違うようです。もう一度入力してください。');
+          return null;
+        }
+        return res.json();
+      })
+      .then(function (data) {
+        if (!data) return;
+        renderAnsweredList(data.items || []);
+      })
+      .catch(function () {
+        pendingCount.textContent = '一覧の取得に失敗しました。';
+      });
+  }
+
+  function loadCurrent() {
+    if (currentTab === 'answered') loadAnswered(); else loadPending();
+  }
+
+  if (tabPendingBtn && tabAnsweredBtn) {
+    tabPendingBtn.addEventListener('click', function () {
+      if (currentTab === 'pending') return;
+      currentTab = 'pending';
+      tabPendingBtn.classList.add('active');
+      tabAnsweredBtn.classList.remove('active');
+      listBody.innerHTML = '';
+      pendingCount.textContent = '未回答の質問を確認中...';
+      loadPending();
+    });
+    tabAnsweredBtn.addEventListener('click', function () {
+      if (currentTab === 'answered') return;
+      currentTab = 'answered';
+      tabAnsweredBtn.classList.add('active');
+      tabPendingBtn.classList.remove('active');
+      listBody.innerHTML = '';
+      pendingCount.textContent = '回答済みの質問を確認中...';
+      loadAnswered();
+    });
+  }
+
   if (refreshButton) {
-    refreshButton.addEventListener('click', loadPending);
+    refreshButton.addEventListener('click', loadCurrent);
   }
 
   if (!passwordRequired || getStoredPassword()) {
@@ -5238,6 +5532,34 @@ app.get('/api/promoter-pending', async (req, res) => {
   }
 });
 
+app.get('/api/promoter-answered', async (req, res) => {
+  allowCors(req, res);
+  if (!checkPromoterPassword(req)) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  try {
+    const pending = await listPendingRows();
+    const items = pending
+      .filter((p) => p.status === 'answered' && p.roomId === 'site-chat')
+      .map((p) => ({
+        id: p.id,
+        question: p.question,
+        requestedAt: p.requestedAt,
+        answer: p.answer || '',
+        answeredAt: p.answeredAt || '',
+        answeredBy: p.answeredBy || '',
+        questionImageUrl: p.questionImageUrl || '',
+        answerImageUrl: p.answerImageUrl || '',
+        autoAnsweredText: p.autoAnsweredText || '',
+      }))
+      .reverse();
+    return res.json({ items });
+  } catch (e) {
+    console.error('/api/promoter-answered エラー:', e);
+    res.status(500).json({ error: 'internal error' });
+  }
+});
+
 app.post('/api/promoter-answer', express.json({ limit: '20mb' }), async (req, res) => {
   allowCors(req, res);
   if (!checkPromoterPassword(req)) {
@@ -5308,6 +5630,76 @@ app.post('/api/promoter-answer', express.json({ limit: '20mb' }), async (req, re
     return res.json({ ok: true });
   } catch (e) {
     console.error('/api/promoter-answer エラー:', e);
+    res.status(500).json({ ok: false, error: 'internal_error' });
+  }
+});
+
+// すでに回答済みの質問に対して、後から回答の内容を直したり、書き足したりできる
+// ようにするための修正用エンドポイント。既存の回答はそのまま上書きし(履歴としては
+// 残さない)、質問者側・Chatworkの両方に「回答が更新されました」と改めて知らせる。
+// ※ 最初に回答した時点でQ&A表(返信テンプレ・面談用FAQ)にも登録されているが、
+//   そちらは自動では直さない。もし最初の回答自体が間違っていた場合、次に似た質問が
+//   来たときに古い(間違った)内容でまた自動回答されてしまう可能性があるため、
+//   その場合はQ&A表の該当行も合わせて手動で直す必要がある。
+app.post('/api/promoter-answer-edit', express.json({ limit: '20mb' }), async (req, res) => {
+  allowCors(req, res);
+  if (!checkPromoterPassword(req)) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  try {
+    const id = ((req.body && req.body.id) || '').toString();
+    const answer = ((req.body && req.body.answer) || '').trim();
+    const staffName = ((req.body && req.body.staffName) || '').trim();
+    if (!id || !answer) return res.status(400).json({ error: 'id and answer are required' });
+
+    let answerImageUrl = '';
+    const answerImageData = (req.body && req.body.answerImageData) || '';
+    if (answerImageData) {
+      try {
+        answerImageUrl = await uploadImageToDrive(answerImageData, 'answer');
+      } catch (e) {
+        await notifyImageUploadFailure('回答修正の添付画像', e);
+      }
+    }
+
+    const pending = await listPendingRows();
+    const target = pending.find((p) => p.id === id && p.roomId === 'site-chat' && p.status === 'answered');
+    if (!target) return res.status(404).json({ ok: false, error: 'not_found' });
+
+    const updates = {
+      answer,
+      answeredBy: staffName ? `${staffName}(サイト管理画面・修正)` : 'プロモーター(サイト管理画面・修正)',
+      answeredAt: new Date().toISOString(),
+    };
+    // 新しい画像が添付されなかった場合は、元の添付画像をそのまま残す(列を上書きしない)。
+    if (answerImageUrl) updates.answerImageUrl = answerImageUrl;
+    await updatePendingRow(target.sheetRowNumber, updates);
+
+    sendPushToAllSubscribers({
+      title: '回答が更新されました',
+      body: target.question.length > 40 ? target.question.slice(0, 40) + '…' : target.question,
+      url: 'https://shp-company.site/qa_bot/',
+    }).catch((e) => console.error('プッシュ通知の送信中にエラーが発生しました:', e));
+
+    try {
+      const mentionPrefix = target.askerAccountId
+        ? `${mentionTag(target.askerAccountId, target.askerName)}\n`
+        : '';
+      await sendMessage(
+        mentionPrefix
+        + `サイト内の質問の回答を修正しました。\n\n`
+        + `【質問】\n${target.question}\n`
+        + `\n【修正後の回答】\n${answer}\n`
+        + imageUrlLine('▼回答の添付画像', answerImageUrl || target.answerImageUrl)
+        + `\n▼質問受付ページはこちら\nhttps://shp-company.site/qa_bot/`
+      );
+    } catch (e) {
+      console.error('Chatworkへの回答修正通知の送信に失敗しました:', e);
+    }
+
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('/api/promoter-answer-edit エラー:', e);
     res.status(500).json({ ok: false, error: 'internal_error' });
   }
 });
