@@ -1179,9 +1179,20 @@ function looksLikeQuestion(text) {
   return /(?:[か？?]|ください|下さい)[\s　)）」』"'.。！!]*$/.test(text);
 }
 
-// 1通のメッセージに複数の質問が混ざっている場合に備えて、改行や「？」「?」で区切って
-// 候補の質問に分割する。見つかった候補は後段でそれぞれ完全一致を試す。
+// 1通のメッセージに複数の質問が混ざっている場合に備えて、改行や「？」「?」「。」で
+// 区切って候補の質問に分割する。見つかった候補は後段でそれぞれ完全一致を試す。
 // 各候補は { marker, text } の形で返し、お客様が元々付けていた番号を後段でも使えるようにする。
+//
+// 以前は「？」「?」の直後でしか区切っていなかったため、「Aですよね。Bでしょうか？」の
+// ように、「？」を含む文の手前に句点(。)区切りの文(A)がくっついていると、両方まとめて
+// 1つの候補として扱われてしまっていた。これ自体は(末尾がちゃんと質問の形なら)候補として
+// 残るので問題ないが、逆に「Aしてください。Bですよね。」のように、末尾に「？」が一度も
+// 出てこない場合、本来は「Aしてください」という独立した依頼が含まれているのに、
+// 後ろに続く「Bですよね。」のせいで、ひとまとまりの文字列の末尾だけを見るlooksLikeQuestion
+// の判定に失敗し、依頼(A)ごと丸ごと候補から漏れてしまう(=自動回答もされず、
+// 担当者への「未回答」通知にも載らず、その質問がそのまま消えてしまう)という不具合が
+// あった。「。」でも区切るようにすることで、文ごとに独立して質問らしいかどうかを
+// 判定できるようにし、この取りこぼしを防ぐ。
 function splitIntoCandidateQuestions(text) {
   if (!text) return [];
   const seen = new Set();
@@ -1190,9 +1201,9 @@ function splitIntoCandidateQuestions(text) {
     const trimmedLine = line.trim();
     if (!trimmedLine) continue;
     if (isNonQuestionLine(trimmedLine)) continue;
-    // 「？」「?」の直後で区切る(区切り文字自体は手前の断片に残す)ので、
-    // 1行に複数の質問が「Aは？Bは？」のように続けて書かれていても分割できる。
-    const parts = trimmedLine.split(/(?<=[？?])/);
+    // 「？」「?」「。」の直後で区切る(区切り文字自体は手前の断片に残す)ので、
+    // 1行に複数の質問・依頼が続けて書かれていても、文ごとに分割できる。
+    const parts = trimmedLine.split(/(?<=[？?。])/);
     for (const part of parts) {
       const { marker, rest } = splitLeadingListMarker(part.trim());
       if (rest.length >= 4 && looksLikeQuestion(rest) && !seen.has(rest)) {
